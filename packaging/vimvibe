@@ -1,27 +1,53 @@
 #!/usr/bin/env bash
-# vimvibe launcher — installed to ~/.local/bin/vimvibe by install.sh.
+# vimvibe launcher — installed to ~/.local/bin/vimvibe by install.sh; `dev.sh` in the source tree runs it as the "dev"
+# profile.
 #   vimvibe start      start the daemon and the overlay in the background (no-op for parts already running)
-#   vimvibe stop       stop both (same as the Meta+Shift+Q shortcut)
+#   vimvibe stop       stop both (same as the quit shortcut)
 #   vimvibe restart    stop, then start
 #   vimvibe status     what is running, plus the daemon's own status
 #   vimvibe settings   open the Settings window
 #   vimvibe doctor     setup check (add --fix to turn accessibility on, --fix-env to keep it on after login)
 #   vimvibe logs       show the last lines of both logs
 #   vimvibe open       open the overlay now (same as pressing the shortcut)
+#   vimvibe version    versions and which profile this is
+#
+# Profiles: with VIMVIBE_PROFILE=dev everything below acts on a separate "dev" vimvibe — own D-Bus name, KDE shortcut
+# group and keys, settings directory, logs and processes — so it can run next to the installed one.
 set -u
+PROFILE="$(printf '%s' "${VIMVIBE_PROFILE:-}" | tr 'A-Z' 'a-z' | tr -dc 'a-z0-9')"
+export VIMVIBE_PROFILE="$PROFILE"
 CORE="${VIMVIBE_CORE:-@CORE@}"
 PALETTE_DIR="${VIMVIBE_PALETTE_DIR:-@PALETTE_DIR@}"
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/vimvibe"
+if [ -n "$PROFILE" ]; then
+  DIR_NAME="vimvibe-$PROFILE"
+  BUS="org.vimvibe.Daemon$(printf '%s' "${PROFILE:0:1}" | tr 'a-z' 'A-Z')${PROFILE:1}"
+  KEYS="Meta+Alt+Space (open) · Meta+Alt+Q (quit) · Ctrl+Alt+, (settings)"
+else
+  DIR_NAME="vimvibe"
+  BUS="org.vimvibe.Daemon"
+  KEYS="Meta+Shift+Space (open) · Meta+Shift+Q (quit) · Ctrl+Shift+, (settings)"
+fi
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/$DIR_NAME"
 mkdir -p "$STATE"
+CALL=(gdbus call --session --dest "$BUS" --object-path /org/vimvibe/Daemon --method)
 
-daemon_pid() { pgrep -u "$USER" -x vimvibe-core -a | awk '$3 == "daemon" {print $1}' | head -1; }
-overlay_pid() { pgrep -u "$USER" -f "^python3 $PALETTE_DIR/vimvibe_palette.py\$" | head -1; }
+# The daemon's pid, from the bus (the same binary name may be running for another profile).
+daemon_pid() { busctl --user status "$BUS" 2>/dev/null | sed -n 's/^PID=//p'; }
+# The overlay is told apart by the script path it runs from (installed copy vs source tree) and by its profile.
+overlay_pid() {
+  local p
+  for p in $(pgrep -u "$USER" -f "^python3 $PALETTE_DIR/vimvibe_palette.py\$"); do
+    if [ "$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^VIMVIBE_PROFILE=//p')" = "$PROFILE" ]; then
+      echo "$p"; return
+    fi
+  done
+}
 
 start() {
   if [ -z "$(daemon_pid)" ]; then
     nohup "$CORE" daemon >"$STATE/daemon.log" 2>&1 &
     for _ in $(seq 1 50); do  # wait until it owns its bus name (max ~5 s)
-      gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Status >/dev/null 2>&1 && break
+      "${CALL[@]}" org.vimvibe.Daemon.Status >/dev/null 2>&1 && break
       sleep 0.1
     done
     echo "daemon started (log: $STATE/daemon.log)"
@@ -34,17 +60,17 @@ start() {
   else
     echo "overlay already running"
   fi
-  echo "press Meta+Shift+Space in any app"
+  echo "keys: $KEYS"
 }
 
 stop() {
   local p
-  # ask politely first (same as Meta+Shift+Q): the daemon unregisters its shortcuts and the overlay exits with it
-  gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Quit >/dev/null 2>&1
+  # ask politely first (same as the quit shortcut): the daemon unregisters its shortcuts and the overlay exits with it
+  "${CALL[@]}" org.vimvibe.Daemon.Quit >/dev/null 2>&1
   for _ in $(seq 1 20); do [ -z "$(daemon_pid)$(overlay_pid)" ] && break; sleep 0.1; done
   p=$(overlay_pid); [ -n "$p" ] && kill "$p"
   p=$(daemon_pid); [ -n "$p" ] && kill "$p"  # SIGTERM: it still unregisters its shortcuts cleanly
-  echo "vimvibe stopped"
+  echo "vimvibe${PROFILE:+ ($PROFILE)} stopped"
   return 0
 }
 
@@ -53,15 +79,17 @@ case "${1:-start}" in
   stop|quit) stop ;;
   restart) stop; sleep 0.5; start ;;
   status)
+    echo "profile: ${PROFILE:-stable (installed)}"
     echo "daemon:  $( [ -n "$(daemon_pid)" ] && echo "running (pid $(daemon_pid))" || echo "not running")"
     echo "overlay: $( [ -n "$(overlay_pid)" ] && echo "running (pid $(overlay_pid))" || echo "not running")"
-    [ -n "$(daemon_pid)" ] && gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon \
-      --method org.vimvibe.Daemon.Status | sed "s/^('//; s/',)\$//" | python3 -m json.tool 2>/dev/null | grep -v '"caption"'
+    echo "core:    $CORE"
+    [ -n "$(daemon_pid)" ] && "${CALL[@]}" org.vimvibe.Daemon.Status | sed "s/^('//; s/',)\$//" | python3 -m json.tool 2>/dev/null | grep -v '"caption"'
     ;;
   settings) exec python3 "$PALETTE_DIR/vimvibe_palette.py" --settings ;;
   doctor) shift; exec "$CORE" doctor "$@" ;;
   logs) tail -n 30 "$STATE/daemon.log" "$STATE/overlay.log" 2>/dev/null ;;
-  open) gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Trigger >/dev/null ;;
-  -h|--help|help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+  open) "${CALL[@]}" org.vimvibe.Daemon.Trigger >/dev/null ;;
+  version|--version|-V) echo "vimvibe ${PROFILE:+($PROFILE) }— $("$CORE" --version) — core: $CORE — overlay: $PALETTE_DIR" ;;
+  -h|--help|help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "unknown command: $1 (try: vimvibe help)" >&2; exit 2 ;;
 esac

@@ -15,8 +15,11 @@ window on the target's screen holds a search panel, and every element of the tar
   tap Ctrl                 move the pointer onto it (hover)   tap Ctrl twice  give it keyboard focus
   Ctrl+1..9                act on row n                       Ctrl+Shift+1..9  select row n
   ↑ ↓ / Tab / Ctrl+N Ctrl+P  move the selection               PageUp / PageDown  by a page
-  hold Space + H J K L     arrow keys in the app (needs keyboard permission); release Space to come back
-  hold Space+Ctrl + H J K L  scroll (the selected element, or the window); release Space to see new labels
+  hold Space + H J K L     scroll left / down / up / right (the selected element, or the window); Shift = faster
+  hold Space + D / U       scroll down / up
+  hold Space+Ctrl + H J K L  arrow keys in the app (needs keyboard permission; the first press only switches the mode
+                           on, keep Space held and use H J K L); Settings can swap the two actions
+  release Space            vimvibe comes back with fresh labels
   tap Alt                  clear the search, show all labels  Ctrl+R       re-read the window
   Ctrl+,  (anywhere: Ctrl+Shift+,)  Settings                  Esc          close (also ends continuous mode)
 Mouse: click a label or a row to activate it, click anywhere else to close, wheel moves the selection.
@@ -34,16 +37,20 @@ from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusPendingCallWatc
 from PySide6.QtGui import QColor, QFontMetricsF, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
-from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, Theme, read_config, write_config
+from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, read_config, write_config
 
-SERVICE, PATH, IFACE = "org.vimvibe.Daemon", "/org/vimvibe/Daemon", "org.vimvibe.Daemon"
+# the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
+SERVICE, PATH, IFACE = "org.vimvibe.Daemon" + PROFILE.capitalize(), "/org/vimvibe/Daemon", "org.vimvibe.Daemon"
 DEBUG = bool(os.environ.get("VIMVIBE_DEBUG"))
 PAD = 14
 TAP_MS = 350        # a modifier released within this time, with no other key, counts as a tap
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
                    "Menu", "MenuBar", "PushButtonMenu"}
-# hold-Space scroll keys -> (dx, dy) in wheel clicks; Shortcat offers both layouts
+# Space scroll keys -> (dx, dy). No modifier on purpose: apps treat Ctrl+wheel as zoom (measured: Dolphin does not
+# scroll at all with Ctrl held), Shift+wheel as horizontal, Alt+wheel as "back" in some browsers.
+SCROLL_LETTERS = {Qt.Key_D: (0, 1), Qt.Key_U: (0, -1)}
+# hold-Space arrow keys -> direction; Shortcat offers both layouts
 SCROLL_KEYS = {
     "hjkl": {Qt.Key_H: (-1, 0), Qt.Key_J: (0, 1), Qt.Key_K: (0, -1), Qt.Key_L: (1, 0)},
     "ijkl": {Qt.Key_J: (-1, 0), Qt.Key_K: (0, 1), Qt.Key_I: (0, -1), Qt.Key_L: (1, 0)},
@@ -448,19 +455,31 @@ class Overlay(QWidget):
         if refresh:
             self.daemon.asyncCall("Refresh")
 
-    def scroll_key(self, k, shift):
-        """A scroll key while Space is held; Shift scrolls four times as far."""
-        dx, dy = SCROLL_KEYS.get(self.cfg["scroll"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k, (0, 0))
+    def scroll_key(self, k, shift, direction=None):
+        """Space + D / U (or a given `direction`): scroll; Shift scrolls four times as far."""
+        dx, dy = direction or SCROLL_LETTERS.get(k, (0, 0))
         if not (dx or dy):
             return False
         if not self.scrolling and not self.start_scroll():
             return True
-        step = max(1, int(self.cfg["scroll"].get("step", 3))) * (4 if shift else 1)
+        step = max(1, int(self.cfg["scroll"].get("step", 5))) * (max(1, int(self.cfg["scroll"].get("fast", 4))) if shift else 1)
         self.send("Scroll", dx * step, dy * step)
         return True
 
-    def arrow_key(self, k, shift):
-        """Space + a direction key: hand the keyboard back to the app and let the daemon send arrow keys (it takes the
+    def space_chord(self, k, ctrl, alt, shift):
+        """A key pressed while Space is held. D / U scroll. H J K L (or I J K L) do what [scroll] hjkl says — scroll by
+        default, arrow keys when set to "arrows" — and Ctrl swaps to the other action (Alt always means arrow keys, as
+        a modifier for them). Returns whether the key was used."""
+        if k in SCROLL_LETTERS and not ctrl and not alt:
+            return self.scroll_key(k, shift)
+        direction = SCROLL_KEYS.get(self.cfg["scroll"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k)
+        if not direction:
+            return False
+        arrows = (self.cfg["scroll"].get("hjkl", "scroll") == "arrows") != ctrl or alt
+        return self.arrow_key(k, shift, ctrl) if arrows else self.scroll_key(k, shift, direction)
+
+    def arrow_key(self, k, shift, ctrl=False):
+        """Space + a direction key (`ctrl`: the Ctrl chord that swaps the action): hand the keyboard back to the app and let the daemon send arrow keys (it takes the
         physical H J K L until Space is released, then reopens the overlay). Without keyboard permission this
         scrolls instead; in apps that don't share key presses with accessibility it explains why it can't."""
         dx, dy = SCROLL_KEYS.get(self.cfg["scroll"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k, (0, 0))
@@ -472,12 +491,15 @@ class Overlay(QWidget):
         if not status.get("keyboard"):
             notify("Arrow keys need keyboard permission", "Scrolling instead. Allow the keyboard once with "
                    "`vimvibe-core pointer-setup` (or Settings → Accessibility & setup).")
-            return self.scroll_key(k, shift)
+            return self.scroll_key(k, shift, (dx, dy))
         # hide first so the app gets the keyboard back, then let the daemon take over without blocking this window
         self.arrowing = True
         self.labels_on = False
         self.hide()
-        watcher = QDBusPendingCallWatcher(self.daemon.asyncCallWithArgumentList("ArrowStart", [dx, dy]), self)
+        # entered with Ctrl held: that Ctrl would turn the first arrow into Ctrl+arrow, so only switch the mode on
+        # (the next H J K L presses are plain arrows)
+        first = (0, 0) if ctrl else (dx, dy)
+        watcher = QDBusPendingCallWatcher(self.daemon.asyncCallWithArgumentList("ArrowStart", list(first)), self)
         watcher.finished.connect(self.arrow_started)
         return True
 
@@ -505,13 +527,12 @@ class Overlay(QWidget):
                     self.tap = {k: ev.timestamp()}
                 return False
             self.tap = {}  # another key: the modifier was used as a modifier, not tapped
-            if k == Qt.Key_Space and not ctrl and not alt:
+            if k == Qt.Key_Space and not alt:
                 if not ev.isAutoRepeat():
                     self.space_down, self.space_used = True, False
                 return True  # typed on release, unless it was used to scroll
-            if self.space_down and not alt:
-                # Space + H J K L: arrow keys to the app; Space + Ctrl + H J K L: scroll (Shortcat: Space+Cmd)
-                if self.scroll_key(k, shift) if ctrl else self.arrow_key(k, shift):
+            if self.space_down:
+                if self.space_chord(k, ctrl, alt, shift):
                     self.space_used = True
                     return True
             if k == Qt.Key_Escape:
@@ -620,8 +641,7 @@ class Overlay(QWidget):
 
     def paint_scroll_banner(self, p):
         """While scrolling: a small banner instead of labels and panel (they would be stale)."""
-        keys = self.cfg["scroll"].get("keys", "hjkl").upper()
-        text = f"Scrolling — hold Space+Ctrl, {' '.join(keys)} (Shift: faster) · release Space for new labels"
+        text = f"Scrolling — hold Space, {' '.join(self.cfg['scroll'].get('keys', 'hjkl').upper())} or D / U (Shift: faster) · release Space for new labels"
         p.setFont(self.t.small_font)
         w = QFontMetricsF(self.t.small_font).horizontalAdvance(text) + 32
         r = QRectF((self.width() - w) / 2, 24, w, 34)
@@ -668,7 +688,7 @@ class Overlay(QWidget):
             p.setFont(t.small_font); p.setPen(t.panel_dim)
             keys = self.cfg["scroll"].get("keys", "hjkl").upper()
             p.drawText(QRectF(pr.x() + PAD + 4, pr.y() + PAD + 44, pr.width() - 2 * PAD, 22), Qt.AlignVCenter,
-                       f"[Enter] click · tap [Alt] all labels · [Space+{keys}] arrows · [Space+Ctrl+{keys}] scroll · [Ctrl+,] settings")
+                       f"[Enter] click · tap [Alt] all labels · [Space+{keys}] scroll · [Space+Ctrl+{keys}] arrows · [Ctrl+,] settings")
         fm = QFontMetricsF(t.row_font)
         sfm = QFontMetricsF(t.small_font)
         for i in range(min(t.rows, len(self.hits) - self.top)):

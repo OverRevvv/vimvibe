@@ -7,7 +7,14 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication
 
-CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "vimvibe", "config.toml")
+# Profiles let a development build run next to the installed one (see README "Developing"): VIMVIBE_PROFILE=dev gives
+# the daemon its own D-Bus name, shortcuts and settings directory. Empty = the installed ("stable") vimvibe.
+PROFILE = "".join(c for c in os.environ.get("VIMVIBE_PROFILE", "").lower() if c.isalnum())
+CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+CONFIG = os.path.join(CONFIG_HOME, f"vimvibe-{PROFILE}" if PROFILE else "vimvibe", "config.toml")
+# a profile without settings of its own starts from the installed vimvibe's (read-only; saving writes CONFIG)
+CONFIG_READ = CONFIG if os.path.exists(CONFIG) or not PROFILE else os.path.join(CONFIG_HOME, "vimvibe", "config.toml")
+
 DEFAULT_ACCENT = "#3b82f6"
 
 DEFAULTS = {
@@ -34,7 +41,16 @@ DEFAULTS = {
     },
     "hints": {"delay_ms": 0, "after_input": False, "auto_activate": False},
     "behavior": {"continuous": False, "continuous_delay_ms": 500},
-    "scroll": {"keys": "hjkl", "step": 3},  # hold Space + keys to scroll; step = wheel clicks per key press
+    "scroll": {
+        "keys": "hjkl",              # layout of the direction keys: hjkl (Vim) or ijkl
+        "hjkl": "scroll",            # Space + H/J/K/L: "scroll" or "arrows" (Space + Ctrl + H/J/K/L does the other)
+        "step": 5,                   # wheel clicks per press
+        "fast": 4,                   # Shift multiplies the distance by this
+        "smooth": True,              # ease the scroll over smooth_ms instead of jumping
+        "smooth_ms": 140,
+        "natural": False,            # touchpad-style direction
+        "invert_horizontal": False,  # swap left and right for H / L
+    },
     "search": {"windows": True, "apps": True, "panel": True},
     "apps": {"exclude": []},
 }
@@ -65,14 +81,14 @@ def read_config():
     cfg = json.loads(json.dumps(DEFAULTS))
     try:
         import tomllib
-        with open(CONFIG, "rb") as f:
+        with open(CONFIG_READ, "rb") as f:
             for section, values in tomllib.load(f).items():
                 if isinstance(values, dict):
                     cfg.setdefault(section, {}).update(values)
     except FileNotFoundError:
         pass
     except (OSError, ValueError) as e:
-        print(f"ignoring {CONFIG}: {e}", file=sys.stderr)
+        print(f"ignoring {CONFIG_READ}: {e}", file=sys.stderr)
     return cfg
 
 

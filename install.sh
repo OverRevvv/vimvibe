@@ -3,7 +3,7 @@
 #   ~/.local/bin/vimvibe-core        the Rust core / daemon
 #   ~/.local/bin/vimvibe             launcher (start | stop | settings | doctor | ...)
 #   ~/.local/share/vimvibe/          the overlay and Settings window (Python + PySide6)
-# Usage: ./install.sh            build + install
+# Usage: ./install.sh            build + install (an upgrade in place: a running installed vimvibe is restarted)
 #        ./install.sh --uninstall remove those files (your settings in ~/.config/vimvibe are kept)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -25,6 +25,15 @@ python3 -c "import PySide6" 2>/dev/null || { echo "missing: PySide6. Fedora: sud
 command -v gdbus >/dev/null || { echo "missing: gdbus (glib2). Fedora: sudo dnf install glib2"; missing=1; }
 [ "$missing" = 0 ] || exit 1
 
+# upgrade in place: stop a running installed copy first (the development copy, if any, is a different profile and is
+# left alone), and start it again afterwards
+was_running=0
+if [ -x "$BIN/vimvibe" ] && [ -n "$(busctl --user status org.vimvibe.Daemon 2>/dev/null | sed -n 's/^PID=//p')" ]; then
+  was_running=1
+  echo "stopping the installed vimvibe for the upgrade…"
+  VIMVIBE_PROFILE= "$BIN/vimvibe" stop >/dev/null 2>&1 || true
+fi
+
 echo "building the core (release)…"
 cargo build --release --manifest-path core/Cargo.toml
 TARGET="${CARGO_TARGET_DIR:-core/target}"
@@ -40,13 +49,18 @@ APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$APPS"
 printf '[Desktop Entry]\nType=Application\nName=vimvibe Settings\nComment=Click anything by typing its name\nExec=%s settings\nIcon=input-keyboard\nCategories=Utility;Accessibility;\n' "$BIN/vimvibe" > "$APPS/vimvibe.desktop"
 
+if [ "$was_running" = 1 ]; then
+  echo "starting the upgraded vimvibe again…"
+  VIMVIBE_PROFILE= "$BIN/vimvibe" start >/dev/null 2>&1 || echo "could not restart it; run: vimvibe start"
+fi
+
 echo
-echo "installed:"
+echo "installed $("$BIN/vimvibe-core" --version):"
 echo "  $BIN/vimvibe-core"
 echo "  $BIN/vimvibe"
 echo "  $SHARE/"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo; echo "note: $BIN is not on your PATH; add it, or call $BIN/vimvibe directly";; esac
 echo
-echo "next:  vimvibe doctor --fix     # turn desktop accessibility on (then restart the apps you want to use)"
-echo "       vimvibe start            # start daemon + overlay, then press Meta+Shift+Space"
+echo "next:  vimvibe start            # start daemon + overlay (turns desktop accessibility on)"
+echo "       ./dev.sh start           # developing? run the source tree as a separate 'dev' copy next to this one"
 echo "       vimvibe settings         # colour, label delay, excluded apps, launch at login, ..."

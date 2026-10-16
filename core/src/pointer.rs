@@ -77,6 +77,22 @@ fn devices_path() -> PathBuf {
     token_path().with_file_name("granted-devices")
 }
 
+/// When to send each wheel click of a scroll of (dx, dy) clicks over `smooth_ms`: (time since start, axis, ±1).
+/// Click i of n goes out when the ease-out curve 1-(1-t)³ has covered i/n of the distance, so the first clicks come
+/// quickly and the last ones slow down. With `smooth_ms` = 0 everything is due immediately.
+fn scroll_schedule(dx: i32, dy: i32, smooth_ms: u64) -> Vec<(Duration, Axis, i32)> {
+    let mut ev = vec![];
+    for (axis, n) in [(Axis::Vertical, dy), (Axis::Horizontal, dx)] {
+        let count = n.unsigned_abs();
+        for i in 1..=count {
+            let at = if smooth_ms == 0 { 0.0 } else { smooth_ms as f64 * (1.0 - (1.0 - i as f64 / count as f64).powf(1.0 / 3.0)) };
+            ev.push((Duration::from_micros((at * 1000.0) as u64), axis, n.signum()));
+        }
+    }
+    ev.sort_by_key(|e| e.0);
+    ev
+}
+
 /// Whether the user's grant includes the keyboard (arrow keys).
 pub fn keyboard_granted() -> bool {
     read_token().is_some() && std::fs::read_to_string(devices_path()).is_ok_and(|s| s.contains("keyboard"))
@@ -192,15 +208,17 @@ impl Pointer {
     }
 
     /// Scroll like mouse-wheel clicks wherever the pointer is: `dy` > 0 down, `dx` > 0 right. Apps scroll the widget
-    /// under the pointer, so callers park the pointer over the target first.
-    pub async fn scroll(&self, dx: i32, dy: i32) -> anyhow::Result<()> {
+    /// under the pointer, so callers park the pointer over the target first. With `smooth_ms` > 0 the clicks are
+    /// spread over that time with an ease-out curve (fast start, gentle stop) instead of arriving at once.
+    pub async fn scroll(&self, dx: i32, dy: i32, smooth_ms: u64) -> anyhow::Result<()> {
         // Wheel clicks ("discrete" axis events). The portal's smooth axis events were measured unreliable here
         // (Dolphin scrolled down for both signs), discrete ones scroll exactly and reverse exactly.
-        if dy != 0 {
-            self.rd.notify_pointer_axis_discrete(&self.session, Axis::Vertical, dy, NotifyPointerAxisDiscreteOptions::default()).await?;
-        }
-        if dx != 0 {
-            self.rd.notify_pointer_axis_discrete(&self.session, Axis::Horizontal, dx, NotifyPointerAxisDiscreteOptions::default()).await?;
+        let start = std::time::Instant::now();
+        for (at, axis, sign) in scroll_schedule(dx, dy, smooth_ms) {
+            if let Some(wait) = at.checked_sub(start.elapsed()) {
+                tokio::time::sleep(wait).await;
+            }
+            self.rd.notify_pointer_axis_discrete(&self.session, axis, sign, NotifyPointerAxisDiscreteOptions::default()).await?;
         }
         Ok(())
     }
@@ -208,5 +226,23 @@ impl Pointer {
     /// End the portal session.
     pub async fn close(self) {
         let _ = self.session.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schedule_is_eased_and_complete() {
+        let ev = scroll_schedule(0, 6, 120);
+        assert_eq!(ev.len(), 6);
+        assert!(ev.iter().all(|e| matches!(e.1, Axis::Vertical) && e.2 == 1));
+        assert!(ev.last().unwrap().0 <= Duration::from_millis(120));
+        // ease-out: the first half of the clicks arrives in well under half the time
+        assert!(ev[2].0 < Duration::from_millis(60), "{:?}", ev[2].0);
+        let up = scroll_schedule(-3, -2, 0);
+        assert_eq!(up.len(), 5);
+        assert!(up.iter().all(|e| e.2 == -1 && e.0 == Duration::ZERO));
     }
 }

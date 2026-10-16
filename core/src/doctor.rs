@@ -253,13 +253,13 @@ pub async fn run(fix: bool, fix_env: bool, json: bool) -> anyhow::Result<i32> {
         let conn = zbus::Connection::session().await?;
         // daemon state first: KDE reports a shortcut as unavailable to everyone, including its owner
         let status: Option<serde_json::Value> = conn
-            .call_method(Some(daemon::NAME), daemon::PATH, Some("org.vimvibe.Daemon"), "Status", &())
+            .call_method(Some(daemon::name().as_str()), daemon::PATH, Some("org.vimvibe.Daemon"), "Status", &())
             .await
             .ok()
             .and_then(|m| m.body().deserialize::<String>().ok())
             .and_then(|s| serde_json::from_str(&s).ok());
         let avail: Option<bool> = conn
-            .call_method(Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), "isGlobalShortcutAvailable", &(daemon::DEFAULT_KEY, daemon::COMPONENT))
+            .call_method(Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), "isGlobalShortcutAvailable", &(daemon::default_key(), daemon::component().as_str()))
             .await
             .ok()
             .and_then(|m| m.body().deserialize().ok());

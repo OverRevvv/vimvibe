@@ -34,23 +34,46 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use zbus::object_server::SignalEmitter;
 
-pub(crate) const NAME: &str = "org.vimvibe.Daemon";
+/// D-Bus name of the daemon: `org.vimvibe.Daemon`, or `org.vimvibe.Daemon<Profile>` (e.g. `...DaemonDev`) for a
+/// development profile so two daemons can run at once.
+pub(crate) fn name() -> String {
+    let p = config::profile();
+    let mut cs = p.chars();
+    match cs.next() {
+        Some(c) => format!("org.vimvibe.Daemon{}{}", c.to_ascii_uppercase(), cs.as_str()),
+        None => "org.vimvibe.Daemon".into(),
+    }
+}
 pub(crate) const PATH: &str = "/org/vimvibe/Daemon";
 /// Window title of the palette UI (see palette/vimvibe_palette.py); never a target.
 const UI_CAPTION: &str = "vimvibe-palette";
-pub(crate) const COMPONENT: &str = "vimvibe";
+/// KDE shortcut component (the group shown in System Settings → Shortcuts): `vimvibe`, `vimvibe-dev`, ...
+pub(crate) fn component() -> String {
+    config::dir_name()
+}
 const ACTION: &str = "toggle";
 const QUIT_ACTION: &str = "quit";
 const SETTINGS_ACTION: &str = "settings";
-/// Ctrl+Shift+Comma, and the same keys as most layouts report them with Shift held (Ctrl+Shift+Less).
-const SETTINGS_KEYS: [i32; 2] = [0x0400_0000 | 0x0200_0000 | 0x2c, 0x0400_0000 | 0x0200_0000 | 0x3c];
-/// Qt::META | Qt::SHIFT | Qt::Key_Q: quit vimvibe (daemon and overlay).
-const QUIT_KEY: i32 = 0x1000_0000 | 0x0200_0000 | 0x51;
+const CTRL: i32 = 0x0400_0000;
+const SHIFT: i32 = 0x0200_0000;
+const ALT: i32 = 0x0800_0000;
+const META: i32 = 0x1000_0000;
+/// Default keys per action (toggle, quit, settings). The installed vimvibe uses Meta+Shift+Space / Meta+Shift+Q /
+/// Ctrl+Shift+,; a development profile uses Alt where the installed one uses Shift, so both can be registered at once.
+fn default_keys() -> ([i32; 1], [i32; 1], Vec<i32>) {
+    if config::profile().is_empty() {
+        ([META | SHIFT | 0x20], [META | SHIFT | 0x51], vec![CTRL | SHIFT | 0x2c, CTRL | SHIFT | 0x3c])
+    } else {
+        ([META | ALT | 0x20], [META | ALT | 0x51], vec![CTRL | ALT | 0x2c])
+    }
+}
 /// Apps whose windows are popups that close the moment another window takes the keyboard (Plasma's launcher, tray and
 /// calendar popups, KRunner). vimvibe's overlay must take the keyboard, so their elements would vanish before use.
 const CLOSES_ON_FOCUS_LOSS: &[&str] = &["plasmashell", "org.kde.plasmashell", "krunner", "org.kde.krunner"];
 /// Qt::META | Qt::SHIFT | Qt::Key_Space. kglobalaccel keeps a user's own rebinding from System Settings over this default.
-pub(crate) const DEFAULT_KEY: i32 = 0x1000_0000 | 0x0200_0000 | 0x20;
+pub(crate) fn default_key() -> i32 {
+    default_keys().0[0]
+}
 
 struct Snapshot {
     els: Vec<Element>,
@@ -241,11 +264,12 @@ impl Daemon {
         }
     }
 
-    /// Scroll by wheel clicks where `ScrollStart` parked the pointer: `dy` > 0 down, `dx` > 0 right.
+    /// Scroll by wheel clicks where `ScrollStart` parked the pointer: `dy` > 0 down, `dx` > 0 right. Natural
+    /// scrolling, swapped left/right and smooth easing come from the settings.
     async fn scroll(&self, dx: i32, dy: i32) -> String {
         let guard = self.0.pointer.lock().await;
         match guard.as_ref() {
-            Some(p) => match p.scroll(dx.clamp(-50, 50), dy.clamp(-50, 50)).await {
+            Some(p) => match do_scroll(p, dx, dy).await {
                 Ok(()) => json!({"ok": true}),
                 Err(e) => json!({"ok": false, "error": e.to_string()}),
             },
@@ -567,6 +591,8 @@ async fn arrow_key(sh: &Shared, em: &SignalEmitter<'_>, k: &crate::keygrab::Key)
     match (k.code, k.pressed) {
         (KC_ESC, true) => end_arrows(sh, em, false).await,
         (KC_SPACE, false) => end_arrows(sh, em, true).await,
+        (crate::keygrab::KC_D, true) => arrow_mode_scroll(sh, 1).await,
+        (crate::keygrab::KC_U, true) => arrow_mode_scroll(sh, -1).await,
         (code, true) => {
             let layout = config::load().scroll.keys;
             if let Some((dx, dy)) = arrow_for(code, &layout) {
@@ -579,10 +605,46 @@ async fn arrow_key(sh: &Shared, em: &SignalEmitter<'_>, k: &crate::keygrab::Key)
     }
 }
 
+/// Scroll by (dx, dy) wheel clicks with the user's scroll settings applied: swapped left/right, natural direction,
+/// smooth easing (see config.rs). Clamped so a runaway caller can't flood the desktop.
+async fn do_scroll(p: &crate::pointer::Pointer, dx: i32, dy: i32) -> anyhow::Result<()> {
+    let c = config::load().scroll;
+    let (mut dx, mut dy) = (dx.clamp(-200, 200), dy.clamp(-200, 200));
+    if c.invert_horizontal {
+        dx = -dx;
+    }
+    if c.natural {
+        (dx, dy) = (-dx, -dy);
+    }
+    p.scroll(dx, dy, if c.smooth { c.smooth_ms.min(1000) } else { 0 }).await
+}
+
+/// Space + D / U while arrow mode is on: scroll the middle of the focused window (the overlay is hidden, so the wheel
+/// reaches the app directly). The pointer is parked once and put back when the mode ends.
+async fn arrow_mode_scroll(sh: &Shared, dir: i32) {
+    let step = config::load().scroll.step.max(1);
+    let Some(f) = sh.focus.lock().await.clone() else { return };
+    let guard = sh.pointer.lock().await;
+    let Some(p) = guard.as_ref() else { return };
+    let mut origin = sh.scroll_origin.lock().await;
+    if origin.is_none() {
+        *origin = kwin::cursor_pos(Duration::from_millis(500)).await;
+        let _ = p.move_to((f.x + f.w / 2) as f64, (f.y + f.h / 2) as f64).await;
+    }
+    if let Err(e) = do_scroll(p, 0, dir * step).await {
+        eprintln!("scroll failed: {e}");
+    }
+}
+
 /// Leave arrow mode: give every key back to the app, and reopen the overlay on the (changed) window if asked.
 async fn end_arrows(sh: &Shared, em: &SignalEmitter<'_>, reopen: bool) {
     if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
         crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
+    }
+    if let Some((x, y)) = sh.scroll_origin.lock().await.take() {
+        if let Some(p) = sh.pointer.lock().await.as_ref() {
+            let _ = p.move_to(x, y).await; // pointer back after Space + D/U scrolling in arrow mode
+        }
     }
     if reopen {
         open(sh, em).await;
@@ -790,20 +852,22 @@ fn ms(d: Duration) -> f64 {
 /// listen on. kglobalaccel keeps a key the user changed in System Settings over these defaults.
 async fn register_hotkeys(conn: &zbus::Connection) -> anyhow::Result<zbus::zvariant::OwnedObjectPath> {
     let call = |member: &'static str| (Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), member);
+    let (toggle, quit, settings) = default_keys();
+    let comp = component();
     let shortcuts: [(&str, &str, Vec<i32>); 3] = [
-        (ACTION, "Toggle palette", vec![DEFAULT_KEY]),
-        (QUIT_ACTION, "Quit vimvibe", vec![QUIT_KEY]),
-        (SETTINGS_ACTION, "Open vimvibe settings", SETTINGS_KEYS.to_vec()),
+        (ACTION, "Toggle palette", toggle.to_vec()),
+        (QUIT_ACTION, "Quit vimvibe", quit.to_vec()),
+        (SETTINGS_ACTION, "Open vimvibe settings", settings),
     ];
     for (action, label, keys) in shortcuts {
-        let id = vec![COMPONENT, action, "vimvibe", label];
+        let id = vec![comp.as_str(), action, "vimvibe", label];
         let (d, p, i, m) = call("doRegister");
         conn.call_method(d, p, i, m, &(id.clone(),)).await?;
         let (d, p, i, m) = call("setShortcut");
         conn.call_method(d, p, i, m, &(id, keys, 2u32)).await?; // 2 = SetPresent
     }
     let (d, p, i, m) = call("getComponent");
-    let path: zbus::zvariant::OwnedObjectPath = conn.call_method(d, p, i, m, &(COMPONENT,)).await?.body().deserialize()?;
+    let path: zbus::zvariant::OwnedObjectPath = conn.call_method(d, p, i, m, &(comp.as_str(),)).await?.body().deserialize()?;
     Ok(path)
 }
 
@@ -845,8 +909,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         keys: Default::default(),
     });
     let conn = zbus::connection::Builder::session()?
-        .name(NAME)
-        .map_err(|e| anyhow::anyhow!("cannot own {NAME}: {e}"))?
+        .name(name())
+        .map_err(|e| anyhow::anyhow!("cannot own {}: {e}", name()))?
         .serve_at(PATH, Daemon(sh.clone()))?
         .build()
         .await
@@ -950,7 +1014,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
             Err(e) => eprintln!("global shortcut not registered ({e}); use the Trigger D-Bus method"),
         }
     }
-    eprintln!("vimvibe daemon ready on {NAME} (kwin watcher: {}, hotkey: {})", sh.kwin_watching.load(Relaxed), sh.hotkey.load(Relaxed));
+    eprintln!("vimvibe daemon ready on {} (kwin watcher: {}, hotkey: {})", name(), sh.kwin_watching.load(Relaxed), sh.hotkey.load(Relaxed));
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -962,7 +1026,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
     let _ = Daemon::quitting(&em).await; // the overlay exits on this
     if sh.hotkey.load(Relaxed) {
         for action in [ACTION, QUIT_ACTION, SETTINGS_ACTION] {
-            let _ = conn.call_method(Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), "unregister", &(COMPONENT, action)).await;
+            let _ = conn.call_method(Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), "unregister", &(component().as_str(), action)).await;
         }
     }
     if let Some((plugin, file)) = kwin_cleanup {

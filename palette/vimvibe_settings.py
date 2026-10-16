@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialogButton
                                QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from vimvibe_style import PRESETS, Theme
+from vimvibe_style import CONFIG, PRESETS, PROFILE, Theme
 
 DELAYS = [("Immediately", 0), ("After 200 ms", 200), ("After 500 ms", 500), ("After 1 second", 1000),
           ("After 2 seconds (Shortcat's default)", 2000), ("After 5 seconds", 5000), ("After input", -1)]
@@ -132,7 +132,7 @@ class SettingsWindow(QWidget):
         super().__init__()
         self.read_config, self.write_config, self.defaults = read_config, write_config, defaults
         self.loading = False
-        self.setWindowTitle("vimvibe Settings")
+        self.setWindowTitle(f"vimvibe Settings ({PROFILE} profile)" if PROFILE else "vimvibe Settings")
         self.resize(760, 680)
         tabs = QTabWidget()
         tabs.addTab(self.general_tab(), "General")
@@ -168,7 +168,11 @@ class SettingsWindow(QWidget):
                             "<code>gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon "
                             "--method org.vimvibe.Daemon.Trigger</code></small>", textFormat=Qt.RichText, wordWrap=True))
         self.login = QCheckBox("Start vimvibe when I log in")
+        if PROFILE:  # only the installed vimvibe starts at login
+            self.login.setEnabled(False)
+            self.login.setToolTip("Only the installed vimvibe starts at login")
         f.addRow("Launch at login:", self.login)
+        f.addRow("Settings file:", QLabel(f"<small><code>{CONFIG}</code></small>", textFormat=Qt.RichText))
         self.windows = QCheckBox("Also offer my other open windows as results (window switching)")
         f.addRow("Search:", self.windows)
         self.apps_search = QCheckBox("Also offer installed applications (type a name, Enter launches it)")
@@ -265,18 +269,35 @@ class SettingsWindow(QWidget):
         f.addRow("", QLabel("<small>Continuous mode stops when you press Esc, after typing into a text field, or when "
                             "a menu or another window takes over. Shortcat recommends “Show labels: After input” with "
                             "it.</small>", textFormat=Qt.RichText, wordWrap=True))
+        box = QGroupBox("Scrolling and arrow keys (hold Space while the overlay is open)"); sf = QFormLayout(box)
+        self.hjkl_action = QComboBox()
+        self.hjkl_action.addItem("Scroll the page (Space + Ctrl + key sends arrow keys)", "scroll")
+        self.hjkl_action.addItem("Send arrow keys (Space + Ctrl + key scrolls)", "arrows")
+        sf.addRow("Space + H J K L:", self.hjkl_action)
         self.scroll_keys = QComboBox()
         self.scroll_keys.addItem("H J K L (Vim: left, down, up, right)", "hjkl")
         self.scroll_keys.addItem("I J K L (arrow layout: up, left, down, right)", "ijkl")
-        f.addRow("Arrow / scroll keys:", self.scroll_keys)
-        self.scroll_step = QSpinBox(); self.scroll_step.setRange(1, 20); self.scroll_step.setSuffix(" wheel clicks per key")
-        f.addRow("Scroll distance:", self.scroll_step)
-        f.addRow("", QLabel("<small>While the overlay is open: hold <b>Space</b> + the keys to send <b>arrow keys</b> "
-                            "to the app (Shift/Ctrl/Alt still apply, e.g. Space+Shift+J selects downward); hold "
-                            "<b>Space+Ctrl</b> + the keys to <b>scroll</b> the selected element or the window (Shift: 4× "
-                            "further). Release Space for fresh labels; Esc stops. Arrow keys need the keyboard "
-                            "permission and work in KDE/Qt and GTK 3 apps (Accessibility &amp; setup tab).</small>",
-                            textFormat=Qt.RichText, wordWrap=True))
+        sf.addRow("Direction keys:", self.scroll_keys)
+        self.scroll_step = QSpinBox(); self.scroll_step.setRange(1, 40); self.scroll_step.setSuffix(" wheel clicks per press")
+        sf.addRow("Scroll distance:", self.scroll_step)
+        self.scroll_fast = QSpinBox(); self.scroll_fast.setRange(1, 20); self.scroll_fast.setPrefix("×")
+        sf.addRow("With Shift held:", self.scroll_fast)
+        self.scroll_smooth = QCheckBox("Smooth animation (ease the scroll instead of jumping)")
+        sf.addRow("Animation:", self.scroll_smooth)
+        self.scroll_smooth_ms = QSpinBox(); self.scroll_smooth_ms.setRange(20, 1000); self.scroll_smooth_ms.setSingleStep(20)
+        self.scroll_smooth_ms.setSuffix(" ms per press")
+        self.scroll_smooth.toggled.connect(self.scroll_smooth_ms.setEnabled)
+        sf.addRow("Animation length:", self.scroll_smooth_ms)
+        self.scroll_natural = QCheckBox("Natural direction (like a touchpad: the content follows your finger)")
+        sf.addRow("Direction:", self.scroll_natural)
+        self.scroll_invert_h = QCheckBox("Swap left and right (H scrolls right, L scrolls left)")
+        sf.addRow("", self.scroll_invert_h)
+        sf.addRow("", QLabel("<small><b>Space + D / U</b> always scroll down / up. <b>Space + H J K L</b> scroll (or send "
+                             "arrow keys, per the first option); hold <b>Ctrl</b> to get the other one. Release Space "
+                             "for fresh labels; Esc stops. Scrolling works in every app and needs the pointer "
+                             "permission; arrow keys need the keyboard permission and work in KDE/Qt and GTK 3 apps "
+                             "(Accessibility &amp; setup tab).</small>", textFormat=Qt.RichText, wordWrap=True))
+        f.addRow(box)
         return w
 
     def apps_tab(self):
@@ -396,7 +417,14 @@ class SettingsWindow(QWidget):
         self.continuous.setChecked(bool(beh.get("continuous", False)))
         self.cdelay.setValue(int(beh.get("continuous_delay_ms", 500)))
         self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
-        self.scroll_step.setValue(int(scroll.get("step", 3)))
+        self.hjkl_action.setCurrentIndex(max(0, self.hjkl_action.findData(scroll.get("hjkl", "scroll"))))
+        self.scroll_step.setValue(int(scroll.get("step", 5)))
+        self.scroll_fast.setValue(int(scroll.get("fast", 4)))
+        self.scroll_smooth.setChecked(bool(scroll.get("smooth", True)))
+        self.scroll_smooth_ms.setValue(int(scroll.get("smooth_ms", 140)))
+        self.scroll_smooth_ms.setEnabled(self.scroll_smooth.isChecked())
+        self.scroll_natural.setChecked(bool(scroll.get("natural", False)))
+        self.scroll_invert_h.setChecked(bool(scroll.get("invert_horizontal", False)))
         self.windows.setChecked(bool(search["windows"]))
         self.apps_search.setChecked(bool(search["apps"]))
         self.panel_labels.setChecked(bool(search["panel"]))
@@ -422,7 +450,9 @@ class SettingsWindow(QWidget):
             hide_panel_until_typing=self.hide_panel.isChecked(), dim=self.dim.value())
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
         cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value())
-        cfg["scroll"].update(keys=self.scroll_keys.currentData(), step=self.scroll_step.value())
+        cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), step=self.scroll_step.value(),
+                             fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
+                             natural=self.scroll_natural.isChecked(), invert_horizontal=self.scroll_invert_h.isChecked())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]
         return cfg
@@ -434,7 +464,8 @@ class SettingsWindow(QWidget):
             if not field.valid():
                 QMessageBox.warning(self, "vimvibe", f"{what}: “{field.value()}” is not a colour."); return
         self.write_config(self.collect())
-        self.set_autostart(self.login.isChecked())
+        if not PROFILE:
+            self.set_autostart(self.login.isChecked())
         self.close()
 
     def set_autostart(self, on):

@@ -21,12 +21,26 @@ pub struct Config {
 pub struct Scroll {
     /// "hjkl" (Vim) or "ijkl" (arrow layout): which physical keys mean left/down/up/right with Space held.
     pub keys: String,
+    /// What Space + H/J/K/L do: "scroll" (default) or "arrows" (send arrow keys; needs the keyboard permission).
+    /// The other action is on Space + Ctrl + H/J/K/L.
+    pub hjkl: String,
+    /// Wheel clicks per press.
+    pub step: i32,
+    /// Spread a scroll over `smooth_ms` instead of jumping (a smooth, eased animation).
+    pub smooth: bool,
+    pub smooth_ms: u64,
+    /// Natural scrolling: down moves the content up, like a touchpad.
+    pub natural: bool,
+    /// Swap left and right for H / L.
+    pub invert_horizontal: bool,
+    /// Shift multiplies the distance by this.
+    pub fast: i32,
 }
 
 impl Default for Scroll {
-    /// Vim keys, like Shortcat's default.
+    /// Vim keys scroll; 5 clicks per press, smooth over 140 ms, Shift = 4× — what felt right in testing.
     fn default() -> Self {
-        Scroll { keys: "hjkl".into() }
+        Scroll { keys: "hjkl".into(), hjkl: "scroll".into(), step: 5, smooth: true, smooth_ms: 140, natural: false, invert_horizontal: false, fast: 4 }
     }
 }
 
@@ -71,19 +85,45 @@ impl Default for Search {
     }
 }
 
-/// Location of the settings file: `$XDG_CONFIG_HOME/vimvibe/config.toml`.
-pub fn path() -> PathBuf {
+/// The profile this process runs as: empty for the installed ("stable") vimvibe, or a short name such as `dev` from
+/// `$VIMVIBE_PROFILE`. A profile has its own D-Bus name, KDE shortcut component and default keys, settings directory
+/// and logs, so a development build can run next to the installed one without touching it. Only lower-case letters
+/// and digits are kept.
+pub fn profile() -> String {
+    std::env::var("VIMVIBE_PROFILE").unwrap_or_default().to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+}
+
+/// `vimvibe` for the stable profile, `vimvibe-<profile>` otherwise: the name of the settings and state directories.
+pub fn dir_name() -> String {
+    match profile().as_str() {
+        "" => "vimvibe".into(),
+        p => format!("vimvibe-{p}"),
+    }
+}
+
+/// `$XDG_CONFIG_HOME` (or `~/.config`).
+fn config_home() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("vimvibe")
-        .join("config.toml")
+}
+
+/// Location of this profile's settings file: `$XDG_CONFIG_HOME/vimvibe[-profile]/config.toml`.
+pub fn path() -> PathBuf {
+    config_home().join(dir_name()).join("config.toml")
+}
+
+/// The file settings are read from: this profile's own, or — for a profile that has none yet — the installed
+/// vimvibe's, so a development build starts with your settings (it never writes to them).
+fn read_path() -> PathBuf {
+    let own = path();
+    if own.exists() { own } else { config_home().join("vimvibe").join("config.toml") }
 }
 
 /// Read the settings file; defaults when it is missing, defaults plus a warning when it can't be parsed.
 pub fn load() -> Config {
-    let p = path();
+    let p = read_path();
     match std::fs::read_to_string(&p) {
         Ok(s) => toml::from_str(&s).unwrap_or_else(|e| {
             eprintln!("ignoring {}: {e}", p.display());
@@ -118,6 +158,16 @@ impl Apps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_names_are_clean() {
+        // SAFETY: tests in this crate don't read the environment concurrently
+        unsafe { std::env::set_var("VIMVIBE_PROFILE", "De-v!") };
+        assert_eq!(profile(), "dev");
+        assert_eq!(dir_name(), "vimvibe-dev");
+        unsafe { std::env::remove_var("VIMVIBE_PROFILE") };
+        assert_eq!(dir_name(), "vimvibe");
+    }
 
     #[test]
     fn parses_and_matches() {

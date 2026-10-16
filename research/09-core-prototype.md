@@ -382,3 +382,42 @@ vimvibe; opening vimvibe over Konsole's Split View submenu closed the menu.
     reopened with a fresh snapshot.
   - GTK4 test app (no key forwarding): the Shift check failed, the user got "dev.vimvibe.GtkTest doesn't share its key
     presses with accessibility …", the overlay reopened, and no listener stayed registered.
+
+## Update 2026-10-16 (15) — scrolling did nothing for the user: Ctrl + wheel
+
+User report: scrolling doesn't happen at all. Reproduced with real key presses typed through the portal into the real
+overlay (my earlier overlay test sent Qt key events straight to the widget, which hid this): Space+Ctrl+J ×3 → 0 px.
+Isolated: the daemon scrolling alone moves Dolphin ~10 px per wheel step; the same overlay scroll path driven by real
+Space+J (no Ctrl) moves it ~1 row; with Ctrl held the wheel is ignored (apps treat Ctrl+wheel as zoom; Dolphin neither
+scrolled nor zoomed for 3 steps). So the Space+Ctrl chord (a straight copy of Shortcat's Space+Cmd) cannot work on
+Linux; Shift+wheel is horizontal and Alt+wheel is "back" in some browsers, so no modifier is safe.
+- Scrolling is now Space + D / U (no modifier; Shift ×4), default 5 wheel steps per press (3 steps ≈ 33 px in Dolphin
+  was barely visible). Space + H/J/K/L stays arrow keys and now also takes Ctrl (Space+Ctrl+J = Ctrl+Down).
+  D / U also work while arrow mode is on (the daemon scrolls the window centre; pointer restored at the end).
+- Verified with real key presses: Space+D ×3 → ~95 px down, Space+U ×3 → back up, pointer restored, overlay reopened;
+  Space+J (arrow mode) then D D → Dolphin selected file-295 and scrolled, pointer restored on Space release.
+
+## Update 2026-10-16 (16) — Space+HJKL scrolls again, scroll settings, dev/stable profiles
+
+- **User report**: Space + J/K/H/L "did not work" (D/U did). The screenshot's `^[[B ^[[A ^[[D ^[[C` were arrow keys
+  arriving in the user's terminal: HJKL had become *arrow keys* (update 14) and the target window was Konsole, so
+  nothing scrolled. The first version (HJKL = scroll) was what they wanted. HJKL now **scrolls** by default
+  (`[scroll] hjkl = "scroll"`), arrow keys moved to Space + Ctrl + HJKL; the setting swaps them. Ctrl is also held
+  physically when the first arrow is injected (measured: Ctrl+Down moves Dolphin's focus without selecting), so the
+  chord that *enters* arrow mode sends no arrow; later presses are plain.
+- Verified with real key presses typed through the portal into the real overlay (Dolphin, 300 files): Space+J ×3 →
+  scrolled ~2 rows, Space+K ×2 → back, nothing selected; natural=true reverses the direction (also with smooth off);
+  Space+Ctrl+J, release Ctrl, J J J → selection moved 3 rows (arrow mode); pointer restored.
+- **Scroll settings** (daemon applies them per press, reading config each time): distance (`step`), Shift multiplier
+  (`fast`), smooth animation (`smooth`, `smooth_ms`: clicks scheduled on an ease-out cubic, unit-tested), natural
+  direction, swapped left/right (`invert_horizontal`). Settings window group "Scrolling and arrow keys".
+  Horizontal direction was not verified in an app (the Dolphin icon view has no horizontal scrolling): H = left,
+  L = right as in Vim; "swap" is there for the opposite expectation.
+- **Profiles** (`VIMVIBE_PROFILE=dev`): own D-Bus name (`org.vimvibe.DaemonDev`), kglobalaccel component
+  (`vimvibe-dev`, keys Meta+Alt+Space / Meta+Alt+Q / Ctrl+Alt+, checked free), settings dir (`~/.config/vimvibe-dev`,
+  read-fallback to the installed settings, never written), logs; the pointer/keyboard grant is shared (the portal
+  identifies the app, not the profile). `dev.sh` runs the source tree as `dev`; the launcher finds each daemon by
+  bus name (`busctl status`) and overlay by script path + profile. Verified in a scratch HOME: installed + dev
+  running together, the dev toggle shortcut opened only the dev snapshot, stopping dev left the installed one and its
+  shortcuts registered. `install.sh` is an in-place upgrade (stops a running installed copy, reinstalls, restarts it;
+  verified: new daemon pid, version 0.2.0). Version bumped to 0.2.0 (`vimvibe version`).

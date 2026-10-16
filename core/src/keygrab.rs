@@ -5,8 +5,8 @@
 //! Two modes:
 //! - **Popup**: the overlay is shown over a popup that must keep the keyboard (Plasma's launcher, open menus); every
 //!   plain key is taken and forwarded to the overlay.
-//! - **Arrows**: the overlay is hidden and the app has the keyboard again; only the physical H J K L / I keys, Space
-//!   and Esc are taken (matched by key position like Shortcat, so Dvorak/Colemak work), so the daemon can turn them
+//! - **Arrows**: the overlay is hidden and the app has the keyboard again; only the physical H J K L / I keys, D / U
+//!   (scroll), Space and Esc are taken (matched by key position like Shortcat, so Dvorak/Colemak work), so the daemon can turn them
 //!   into arrow keys; everything else — including the arrow keys we send — reaches the app.
 
 use serde::Serialize;
@@ -35,6 +35,8 @@ pub const MODE_ARROWS: u8 = 2;
 
 /// X keycodes (evdev + 8) of the keys arrow mode takes: physical positions, independent of the layout.
 pub const KC_ESC: u32 = 9;
+pub const KC_U: u32 = 30;
+pub const KC_D: u32 = 40;
 pub const KC_I: u32 = 31;
 pub const KC_H: u32 = 43;
 pub const KC_J: u32 = 44;
@@ -85,7 +87,7 @@ impl Listener {
                 true // the popup must not see any plain key
             }
             MODE_ARROWS => {
-                if matches!(code, KC_ESC | KC_I | KC_H | KC_J | KC_K | KC_L | KC_SPACE) {
+                if matches!(code, KC_ESC | KC_I | KC_H | KC_J | KC_K | KC_L | KC_SPACE | KC_D | KC_U) {
                     let _ = self.tx.send(Key { name, text, pressed, code });
                     true
                 } else {
