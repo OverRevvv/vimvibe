@@ -349,3 +349,36 @@ vimvibe; opening vimvibe over Konsole's Split View submenu closed the menu.
   panel style/opacity/width/rows/font size/hint line/hide-until-typing; screen dim. The Settings preview draws with
   the same `Theme.draw_label` the overlay uses. Verified by rendering the Settings window offscreen and the overlay
   window's own pixels with the Shortcat preset.
+
+## Update 2026-10-16 (14) — Space + H/J/K/L arrow keys (keyboard permission)
+
+- Why a permission: Wayland gives no client a way to inject keys into another; the sanctioned route is the
+  RemoteDesktop portal's keyboard device (separate from the pointer device in the consent dialog). uinput (root) and
+  AT-SPI `GenerateKeyboardEvent` (X11 only) are not options.
+- `pointer-setup` now asks for pointer + keyboard and records the granted devices next to the token
+  (`granted-devices`); later sessions request exactly those, so the existing pointer-only grant keeps working with no
+  surprise dialog. `doctor` reports whether the keyboard is allowed.
+- Focus problem: keys go to the focused window, which is the overlay while it is open. Arrow mode therefore closes the
+  overlay (the app gets the keyboard back) and takes the physical H J K L / I, Space and Esc keys through the AT-SPI
+  keystroke listener (new mode `MODE_ARROWS`, matched by X keycode so other layouts work); H/J/K/L presses become
+  arrow keysyms through the portal; Ctrl/Alt masks are registered so physical modifiers combine with the injected
+  arrow (Space+Shift+J = Shift+Down); everything else, including the injected arrows, passes. Space release ends the
+  mode and reopens the overlay; Esc ends it; the 60 s idle release still applies.
+- Safety check: only apps that forward keys to the registry (Qt, GTK 3) can be handled; elsewhere (Chromium, GTK 4)
+  the user's J would be typed into the app. `ArrowStart` taps Shift through the portal and requires the listener to see
+  it within 400 ms, otherwise it reopens the overlay and explains. Scrolling moved to Space+Ctrl+H/J/K/L (Shortcat:
+  Space+Cmd); without the keyboard grant Space+H/J/K/L falls back to scrolling with a notice.
+- Verified without the keyboard grant (current state): Space+J ×3 → fallback notice + scroll (Dolphin 300 → 295),
+  Space+Ctrl+J ×3 → scroll (295 → 285), query untouched. Unit test for HJKL/IJKL keycode mapping (19 tests pass).
+- After the user granted pointer + keyboard (`granted-devices` = `pointer,keyboard`, doctor OK), tested with real
+  key presses typed into Dolphin through the portal (new `vimvibe-core key` test command), i.e. the same path as the
+  user's own keys:
+  - First attempt failed (bug): the overlay called `ArrowStart` with a blocking call while still visible, so the Shift
+    check was satisfied by vimvibe's own window and the arrows and the user's keys went to the frozen overlay; the
+    60 s idle release then fired (that safety net works). Fixed: the overlay hides first and calls asynchronously; the
+    daemon waits until KWin reports the target app active again before the check.
+  - Then: Space+J in the overlay → overlay hidden, Dolphin focused, ↓ (selection file-295 → 290, one row); `j j j`
+    typed into Dolphin → consumed and turned into ↓×3 (290 → 275, no type-ahead jump); Space released → overlay
+    reopened with a fresh snapshot.
+  - GTK4 test app (no key forwarding): the Shift check failed, the user got "dev.vimvibe.GtkTest doesn't share its key
+    presses with accessibility …", the overlay reopened, and no listener stayed registered.

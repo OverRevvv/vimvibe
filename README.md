@@ -15,6 +15,7 @@ Press **Meta+Shift+Space** in any app. Every button, link, tab and field in the 
 - [Quick start](#quick-start)
 - [Using it](#using-it)
 - [Settings](#settings)
+- [Arrow keys and scrolling](#arrow-keys-and-scrolling)
 - [Excluding apps](#excluding-apps)
 - [Making apps visible](#making-apps-visible-accessibility)
 - [Troubleshooting](#troubleshooting)
@@ -84,7 +85,8 @@ Press **Meta+Shift+Space** in, say, Dolphin or System Settings. Then:
 To start vimvibe automatically, tick *Launch at login* in `vimvibe settings`.
 
 For clicks that need the pointer (see [How it works](#how-it-works)), allow it once:
-`vimvibe-core pointer-setup` (your desktop shows a *Remote Control* dialog; approve it).
+`vimvibe-core pointer-setup` (your desktop shows a *Remote Control* dialog; allow the pointer, and the keyboard if
+you want Space + H/J/K/L arrow keys).
 
 ## Using it
 
@@ -93,7 +95,8 @@ For clicks that need the pointer (see [How it works](#how-it-works)), allow it o
 | Open / close | **Meta+Shift+Space** (Esc also closes) |
 | Quit vimvibe completely (daemon + overlay) | **Meta+Shift+Q** (or `vimvibe stop`) |
 | Settings | **Ctrl+Shift+,** from anywhere (**Ctrl+,** while the overlay is open) |
-| Scroll | hold **Space** + **H J K L** (or I J K L) — scrolls the selected element, or the window; **Shift** = 4× further; release Space for fresh labels |
+| Arrow keys in the app | hold **Space** + **H J K L** (or I J K L) — ← ↓ ↑ →; add Shift/Ctrl/Alt for selection or word jumps; release Space to come back ([details](#arrow-keys-and-scrolling)) |
+| Scroll | hold **Space** + **Ctrl** + **H J K L** — scrolls the selected element, or the window; **Shift** = 4× further |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
 | Right click / double click / middle click | **Ctrl+Enter** / **Alt+Enter** / **Shift+Enter** |
 | Move the pointer onto it (hover) | **tap Ctrl** |
@@ -126,9 +129,9 @@ Open the Settings window with **Ctrl+Shift+,** (or `vimvibe settings`). It has a
 |---|---|
 | General | shortcuts (changed in System Settings), launch at login, window switching, app launching, panel labels |
 | Appearance | theme presets (Blue, Shortcat, Nord, Dracula, Gruvbox, Solarized light, High contrast); label background, text, outline and selected colours; font; label text size; overall label size; corner radius; capitals; panel style (dark/light), opacity, width, result rows, text size, position, key-hint line, hide-until-typing; screen dimming |
-| Labels & behaviour | when labels appear (immediately … 5 s, after input), Vimium-style auto-click, continuous mode, scroll keys (HJKL/IJKL) and distance |
+| Labels & behaviour | when labels appear (immediately … 5 s, after input), Vimium-style auto-click, continuous mode, arrow/scroll keys (HJKL/IJKL) and scroll distance |
 | Excluded apps | apps vimvibe must never read or click |
-| Accessibility & setup | setup check, turn accessibility on, keep it on after login, allow pointer control |
+| Accessibility & setup | setup check, turn accessibility on, keep it on after login, allow pointer and keyboard control |
 
 ```toml
 [ui]
@@ -162,7 +165,7 @@ continuous = false         # come back after each click
 continuous_delay_ms = 500
 
 [scroll]
-keys = "hjkl"              # or "ijkl"
+keys = "hjkl"              # or "ijkl": arrow keys (Space+keys) and scrolling (Space+Ctrl+keys)
 step = 3                   # wheel clicks per key press (Shift: 4×)
 
 [search]
@@ -180,20 +183,54 @@ enable_on_start = true     # the daemon turns desktop accessibility on when it s
 One-off colour for a single run: `python3 ~/.local/share/vimvibe/vimvibe_palette.py --accent orange`
 (or set `VIMVIBE_ACCENT`).
 
-## Scrolling
+## Arrow keys and scrolling
 
-Shortcat (docs: *Arrow Keys / Scroll*, an alpha feature) lets you hold **Space** and press **H J K L** (or I J K L)
-to send arrow keys, and **Space + Cmd + H J K L** to send scroll events where the pointer is; tapping Ctrl moves the
-pointer onto a result first, to choose what scrolls.
+Like Shortcat's *Arrow Keys / Scroll* feature, vimvibe lets you move around an app from the home row while the
+overlay is open. You need the desktop's **Remote Control** permission once (see below).
 
-vimvibe does the scroll part the same way, with one key less: hold **Space** and press **H J K L**.
-- What scrolls: the selected result's element when you have typed something (e.g. type `files`, then Space+J scrolls
-  that list), otherwise the middle of the window. The pointer is parked there for the scroll and put back afterwards.
-- How: real mouse-wheel clicks through the desktop's Remote Control permission (the same one used for clicks), so it
-  works in every app, accessible or not. While you scroll, the overlay lets the wheel events through to the app.
-- Release Space: the window is re-read and fresh labels appear for what scrolled into view.
-- Arrow keys (Shortcat's Space+HJKL) are not sent: that needs keyboard permission from the desktop, which vimvibe
-  does not ask for yet.
+| Hold | Then press | Does |
+|---|---|---|
+| **Space** | **H J K L** (or I J K L) | sends ← ↓ ↑ → to the app — move in lists, menus, text, file views |
+| **Space** + **Shift** / **Ctrl** / **Alt** | **H J K L** | the arrow key with that modifier — Space+Shift+J selects downward, Space+Ctrl+L jumps a word |
+| **Space** + **Ctrl** | **H J K L** | scrolls (mouse-wheel steps); add **Shift** to scroll 4× further |
+| — | release **Space** | the window is re-read and vimvibe comes back with fresh labels |
+| — | **Esc** | stop (arrow mode ends, vimvibe stays closed) |
+
+The keys are matched by their **position** on the keyboard, not the letter they type, so they sit under your right
+hand on Dvorak, Colemak or AZERTY too. Choose H J K L (Vim) or I J K L (arrow layout) in *Settings → Labels &
+behaviour*, together with the scroll distance.
+
+### How arrow keys work (and where they don't)
+
+On Wayland an app may not type into another app, so arrow keys go through the desktop's Remote Control permission
+— the keyboard part of it. When you press Space + J, vimvibe hides, the app gets the keyboard back, and vimvibe
+watches only for the H J K L / I, Space and Esc keys (through the accessibility keystroke listener screen readers use),
+turning them into arrow keys; every other key goes to the app as usual. Releasing Space gives everything back.
+
+That listener only sees keys in apps that share their key presses with accessibility: **KDE/Qt apps and GTK 3 apps
+(Firefox, GIMP, …)**. In **Chrome/Electron and GTK 4** apps vimvibe could not tell your J from typing, so it checks
+first (it taps Shift and looks whether the tap arrives) and, if it can't, says so and does nothing — use
+Space+Ctrl+H/J/K/L scrolling there, which works everywhere. Without the keyboard permission, Space + H/J/K/L scrolls
+instead and a notice tells you how to allow the keyboard.
+
+### How scrolling works
+
+- What scrolls: the selected result's element when you have typed something (e.g. type `files`, then Space+Ctrl+J
+  scrolls that list), otherwise the middle of the window. The pointer is parked there for the scroll and put back
+  afterwards.
+- How: real mouse-wheel steps through the Remote Control permission, so it works in every app, accessible or not.
+  While you scroll, the overlay lets the wheel events through to the app.
+
+### The permission
+
+```bash
+vimvibe-core pointer-setup      # or Settings → Accessibility & setup → "Allow pointer and keyboard control…"
+```
+
+Your desktop shows its *Remote Control* dialog once: allow **pointer** (clicks, scrolling, right click, hover) and
+**keyboard** (only used for the arrow keys). KDE remembers the answer; vimvibe never opens the dialog on its own.
+`vimvibe doctor` shows what is allowed. Revoke it any time in **System Settings → Security & Privacy → Remote
+Control**, or delete `~/.local/state/vimvibe/pointer-token`.
 
 ## Excluding apps
 
@@ -231,7 +268,9 @@ Accessibility is a session setting that is off by default on most distributions;
 | Few or no labels in Chrome/Electron | start the app with `--force-renderer-accessibility` |
 | Labels in the wrong place | report it with your scaling and monitor setup (HiDPI/multi-monitor are not tested yet) |
 | "pointer control is not set up" | run `vimvibe-core pointer-setup` once and approve the dialog |
-| Want to stop vimvibe from clicking with the pointer | System Settings → Security & Privacy → Remote Control, or delete `~/.local/state/vimvibe/pointer-token` |
+| "Arrow keys need keyboard permission" | run `vimvibe-core pointer-setup` again and allow the keyboard too |
+| "can't send arrow keys here" | the app (Chrome/Electron, GTK 4) doesn't share key presses with accessibility: use Space+Ctrl+H/J/K/L to scroll |
+| Want to stop vimvibe from clicking or typing arrow keys | System Settings → Security & Privacy → Remote Control, or delete `~/.local/state/vimvibe/pointer-token` |
 | Logs | `vimvibe logs` (`~/.local/state/vimvibe/`) |
 
 ## Command reference
@@ -243,11 +282,12 @@ vimvibe doctor [--fix] [--fix-env]
 vimvibe-core <command> [--app NAME] [--json] [--strategy auto|cache|walk] ...
   daemon            the resident service (what `vimvibe start` runs)
   doctor            setup check
-  pointer-setup     one-time permission for pointer clicks
+  pointer-setup     one-time permission for clicks, scrolling and arrow keys
   list              list the focused window's elements        (vimvibe-core --app dolphin list)
   search QUERY      search them                               (vimvibe-core --app dolphin search "new folder")
   act QUERY         activate the best match                   (--index N, --dry-run)
-  status | apps | focus | watch | cursor | click X Y | serve
+  status | apps | focus | watch | cursor | click X Y | serve | surfaces
+  key KEY…          type keys into the focused window (testing; e.g. `key Down j -- +space -space`)
 ```
 
 `vimvibe-core --help` and `vimvibe-core <command> --help` print every option.
@@ -305,6 +345,7 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `Activate(i)` / `ActivateId(id)` / `ActivateWith(id, action)` | act on a hit / an element; action = `click right double middle hover focus` |
 | `Refresh()` | re-read the same window |
 | `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEnd()` | park the pointer over element `id` (or the window), scroll by wheel clicks, put it back |
+| `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-key mode: hide, take the physical H/J/K/L/I, Space, Esc keys and send arrows; Space release reopens |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |
 | signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()`, `Key(json)`, `OpenSettings()` | |
 
@@ -329,8 +370,8 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 | Launch applications | ✅ (installed apps; also from the start menu) |
 | Window title-bar buttons | ✅ (close, maximize, minimize, window menu, all desktops) |
 | Menu bar / app menu search, Dock | ⏳ planned ([research/11](research/11-os-scope-plan.md)) |
-| Space+Cmd+HJKL scroll | ✅ as Space+HJKL (or IJKL), wheel events through the pointer permission |
-| Space+HJKL arrow keys | ⏳ planned (needs the desktop's keyboard permission) |
+| Space+HJKL arrow keys (IJKL option, keycode-based) | ✅ in KDE/Qt and GTK 3 apps, with the desktop's keyboard permission |
+| Space+Cmd+HJKL scroll | ✅ as Space+Ctrl+HJKL, wheel events through the pointer permission, in every app |
 | Preferences window (Cmd+,) | ✅ Ctrl+Shift+, anywhere, Ctrl+, in the overlay; plus label/panel theming Shortcat doesn't offer |
 | Hide query pane by default | ✅ `hide_panel_until_typing` |
 | Emoji search with `:` | ⏳ planned |

@@ -13,6 +13,21 @@ pub struct Config {
     pub apps: Apps,
     pub search: Search,
     pub accessibility: Accessibility,
+    pub scroll: Scroll,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Scroll {
+    /// "hjkl" (Vim) or "ijkl" (arrow layout): which physical keys mean left/down/up/right with Space held.
+    pub keys: String,
+}
+
+impl Default for Scroll {
+    /// Vim keys, like Shortcat's default.
+    fn default() -> Self {
+        Scroll { keys: "hjkl".into() }
+    }
 }
 
 #[derive(Debug, Deserialize)]

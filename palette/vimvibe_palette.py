@@ -15,7 +15,8 @@ window on the target's screen holds a search panel, and every element of the tar
   tap Ctrl                 move the pointer onto it (hover)   tap Ctrl twice  give it keyboard focus
   Ctrl+1..9                act on row n                       Ctrl+Shift+1..9  select row n
   ↑ ↓ / Tab / Ctrl+N Ctrl+P  move the selection               PageUp / PageDown  by a page
-  hold Space + H J K L     scroll (the selected element, or the window); release Space to see new labels
+  hold Space + H J K L     arrow keys in the app (needs keyboard permission); release Space to come back
+  hold Space+Ctrl + H J K L  scroll (the selected element, or the window); release Space to see new labels
   tap Alt                  clear the search, show all labels  Ctrl+R       re-read the window
   Ctrl+,  (anywhere: Ctrl+Shift+,)  Settings                  Esc          close (also ends continuous mode)
 Mouse: click a label or a row to activate it, click anywhere else to close, wheel moves the selection.
@@ -29,7 +30,7 @@ All settings live in ~/.config/vimvibe/config.toml (see README.md); --accent and
 import argparse, json, os, sys
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Slot
-from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusServiceWatcher
+from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusPendingCallWatcher, QDBusServiceWatcher
 from PySide6.QtGui import QColor, QFontMetricsF, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
@@ -122,6 +123,7 @@ class Overlay(QWidget):
         self.space_down = False   # Space is held: H J K L scroll instead of typing
         self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
         self.scrolling = False
+        self.arrowing = False     # arrow mode: the overlay is hidden and the daemon turns H J K L into arrow keys
         self.edit = QLineEdit(self)
         self.default_placeholder = "Search for elements, or type a label"
         self.edit.setFrame(False)
@@ -162,6 +164,7 @@ class Overlay(QWidget):
     def opened(self, payload):
         """Daemon signal: a snapshot is ready. Fetch the elements, lay out labels and panel, and show the overlay."""
         self.load_settings()  # settings apply on the next open, no restart
+        self.space_down = self.space_used = self.arrowing = self.scrolling = False  # a fresh open ends any key mode
         self.meta = json.loads(payload)
         self.place_screen()
         self.elements = (self.call("Elements") or {}).get("elements", [])
@@ -456,6 +459,38 @@ class Overlay(QWidget):
         self.send("Scroll", dx * step, dy * step)
         return True
 
+    def arrow_key(self, k, shift):
+        """Space + a direction key: hand the keyboard back to the app and let the daemon send arrow keys (it takes the
+        physical H J K L until Space is released, then reopens the overlay). Without keyboard permission this
+        scrolls instead; in apps that don't share key presses with accessibility it explains why it can't."""
+        dx, dy = SCROLL_KEYS.get(self.cfg["scroll"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k, (0, 0))
+        if not (dx or dy):
+            return False
+        if self.arrowing:
+            return True
+        status = self.call("Status") or {}
+        if not status.get("keyboard"):
+            notify("Arrow keys need keyboard permission", "Scrolling instead. Allow the keyboard once with "
+                   "`vimvibe-core pointer-setup` (or Settings → Accessibility & setup).")
+            return self.scroll_key(k, shift)
+        # hide first so the app gets the keyboard back, then let the daemon take over without blocking this window
+        self.arrowing = True
+        self.labels_on = False
+        self.hide()
+        watcher = QDBusPendingCallWatcher(self.daemon.asyncCallWithArgumentList("ArrowStart", [dx, dy]), self)
+        watcher.finished.connect(self.arrow_started)
+        return True
+
+    def arrow_started(self, watcher):
+        """Answer to ArrowStart: on refusal (the app doesn't share key presses), explain; the daemon reopens."""
+        msg = watcher.reply()
+        args = msg.arguments() if msg is not None else []
+        res = json.loads(args[0]) if args and args[0] else {}
+        watcher.deleteLater()
+        if not res.get("ok"):
+            self.arrowing = False
+            notify("vimvibe can't send arrow keys here", res.get("error", "the daemon did not answer"))
+
     def eventFilter(self, obj, ev):
         """Keys typed into the search field: Esc, Enter variants, Ctrl+digit, navigation, Space-scrolling, Settings,
         and modifier taps."""
@@ -474,8 +509,9 @@ class Overlay(QWidget):
                 if not ev.isAutoRepeat():
                     self.space_down, self.space_used = True, False
                 return True  # typed on release, unless it was used to scroll
-            if self.space_down and not ctrl and not alt:
-                if self.scroll_key(k, shift):
+            if self.space_down and not alt:
+                # Space + H J K L: arrow keys to the app; Space + Ctrl + H J K L: scroll (Shortcat: Space+Cmd)
+                if self.scroll_key(k, shift) if ctrl else self.arrow_key(k, shift):
                     self.space_used = True
                     return True
             if k == Qt.Key_Escape:
@@ -507,6 +543,10 @@ class Overlay(QWidget):
             if step:
                 self.move_sel(step); return True
         elif t == QEvent.KeyRelease and ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
+            if self.arrowing:  # Space came back to us before the daemon took over the keys: end arrow mode here
+                self.arrowing = self.space_down = False
+                self.send("ArrowEnd", True)
+                return True
             if self.space_down:
                 self.space_down = False
                 if self.space_used:
@@ -581,7 +621,7 @@ class Overlay(QWidget):
     def paint_scroll_banner(self, p):
         """While scrolling: a small banner instead of labels and panel (they would be stale)."""
         keys = self.cfg["scroll"].get("keys", "hjkl").upper()
-        text = f"Scrolling — hold Space, {' '.join(keys)} (Shift: faster) · release Space for new labels"
+        text = f"Scrolling — hold Space+Ctrl, {' '.join(keys)} (Shift: faster) · release Space for new labels"
         p.setFont(self.t.small_font)
         w = QFontMetricsF(self.t.small_font).horizontalAdvance(text) + 32
         r = QRectF((self.width() - w) / 2, 24, w, 34)
@@ -628,7 +668,7 @@ class Overlay(QWidget):
             p.setFont(t.small_font); p.setPen(t.panel_dim)
             keys = self.cfg["scroll"].get("keys", "hjkl").upper()
             p.drawText(QRectF(pr.x() + PAD + 4, pr.y() + PAD + 44, pr.width() - 2 * PAD, 22), Qt.AlignVCenter,
-                       f"[Enter] click · [Ctrl+Enter] right · tap [Alt] all labels · [Space+{keys}] scroll · [Ctrl+,] settings")
+                       f"[Enter] click · tap [Alt] all labels · [Space+{keys}] arrows · [Space+Ctrl+{keys}] scroll · [Ctrl+,] settings")
         fm = QFontMetricsF(t.row_font)
         sfm = QFontMetricsF(t.small_font)
         for i in range(min(t.rows, len(self.hits) - self.top)):

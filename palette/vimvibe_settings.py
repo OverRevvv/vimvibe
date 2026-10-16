@@ -268,12 +268,14 @@ class SettingsWindow(QWidget):
         self.scroll_keys = QComboBox()
         self.scroll_keys.addItem("H J K L (Vim: left, down, up, right)", "hjkl")
         self.scroll_keys.addItem("I J K L (arrow layout: up, left, down, right)", "ijkl")
-        f.addRow("Scroll keys (hold Space):", self.scroll_keys)
+        f.addRow("Arrow / scroll keys:", self.scroll_keys)
         self.scroll_step = QSpinBox(); self.scroll_step.setRange(1, 20); self.scroll_step.setSuffix(" wheel clicks per key")
         f.addRow("Scroll distance:", self.scroll_step)
-        f.addRow("", QLabel("<small>While the overlay is open, hold Space and press the keys to scroll the selected "
-                            "element (or the window); Shift scrolls 4× further; release Space to get fresh labels. "
-                            "Scrolling uses the pointer permission (Accessibility &amp; setup tab).</small>",
+        f.addRow("", QLabel("<small>While the overlay is open: hold <b>Space</b> + the keys to send <b>arrow keys</b> "
+                            "to the app (Shift/Ctrl/Alt still apply, e.g. Space+Shift+J selects downward); hold "
+                            "<b>Space+Ctrl</b> + the keys to <b>scroll</b> the selected element or the window (Shift: 4× "
+                            "further). Release Space for fresh labels; Esc stops. Arrow keys need the keyboard "
+                            "permission and work in KDE/Qt and GTK 3 apps (Accessibility &amp; setup tab).</small>",
                             textFormat=Qt.RichText, wordWrap=True))
         return w
 
@@ -308,10 +310,11 @@ class SettingsWindow(QWidget):
         r.addWidget(b1); r.addWidget(b2); r.addWidget(b3)
         bl.addLayout(r)
         v.addWidget(box)
-        box2 = QGroupBox("Pointer (scrolling, right click, hover, controls apps can't activate)"); pl = QVBoxLayout(box2)
-        pl.addWidget(QLabel("Uses the desktop's Remote Control permission. Your desktop asks once; revoke it any time "
-                            "in System Settings → Security & Privacy → Remote Control.", wordWrap=True))
-        b4 = QPushButton("Allow pointer control…"); b4.clicked.connect(lambda: self.show_cmd([core_binary(), "pointer-setup"]))
+        box2 = QGroupBox("Pointer and keyboard (scrolling, arrow keys, right click, hover)"); pl = QVBoxLayout(box2)
+        pl.addWidget(QLabel("Uses the desktop's Remote Control permission. Your desktop asks once: allow the pointer "
+                            "and the keyboard (the keyboard is only used for Space + H/J/K/L arrow keys). Revoke it any "
+                            "time in System Settings → Security & Privacy → Remote Control.", wordWrap=True))
+        b4 = QPushButton("Allow pointer and keyboard control…"); b4.clicked.connect(lambda: self.show_cmd([core_binary(), "pointer-setup"]))
         pl.addWidget(b4)
         v.addWidget(box2)
         self.output = QPlainTextEdit(readOnly=True); self.output.setPlaceholderText("Command output appears here")

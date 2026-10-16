@@ -5,14 +5,18 @@
 //! hands back a restore token, so later sessions start silently. We never touch the dialog ourselves, and the token
 //! is only ever created through `pointer-setup` (the daemon never opens the dialog on its own).
 //!
+//! Keyboard: the same permission can also cover a keyboard device (asked for by `pointer-setup` since arrow keys
+//! were added). Which devices the user granted is stored next to the token, and later sessions request exactly those,
+//! so a grant made before keyboard support never turns into a surprise dialog.
+//!
 //! The portal's absolute motion needs a ScreenCast stream (a second dialog), so we use **relative** motion with a
 //! closed loop: read the real cursor position from KWin (`workspace.cursorPos`), send the difference, read again,
 //! until within a pixel. That is robust to pointer acceleration/scaling because every step is measured.
 
 use crate::kwin;
 use ashpd::desktop::remote_desktop::{
-    Axis, DeviceType, KeyState, NotifyPointerAxisDiscreteOptions, NotifyPointerButtonOptions, NotifyPointerMotionOptions, RemoteDesktop, SelectDevicesOptions,
-    StartOptions,
+    Axis, DeviceType, KeyState, NotifyKeyboardKeysymOptions, NotifyPointerAxisDiscreteOptions, NotifyPointerButtonOptions, NotifyPointerMotionOptions,
+    RemoteDesktop, SelectDevicesOptions, StartOptions,
 };
 use ashpd::desktop::{CreateSessionOptions, PersistMode, Session};
 use ashpd::enumflags2::BitFlags;
@@ -68,6 +72,16 @@ fn write_token(token: &str) -> anyhow::Result<()> {
 }
 
 /// Whether pointer clicks are available without asking (setup was done once).
+/// Where the granted device list ("pointer" or "pointer,keyboard") is kept, next to the token.
+fn devices_path() -> PathBuf {
+    token_path().with_file_name("granted-devices")
+}
+
+/// Whether the user's grant includes the keyboard (arrow keys).
+pub fn keyboard_granted() -> bool {
+    read_token().is_some() && std::fs::read_to_string(devices_path()).is_ok_and(|s| s.contains("keyboard"))
+}
+
 pub fn is_set_up() -> bool {
     read_token().is_some()
 }
@@ -75,6 +89,8 @@ pub fn is_set_up() -> bool {
 pub struct Pointer {
     rd: RemoteDesktop,
     session: Session<RemoteDesktop>,
+    /// The keyboard device was granted too (arrow keys).
+    keyboard: bool,
 }
 
 impl Pointer {
@@ -83,23 +99,49 @@ impl Pointer {
     pub async fn connect(interactive: bool) -> anyhow::Result<Self> {
         let token = read_token();
         anyhow::ensure!(interactive || token.is_some(), "pointer control is not set up; run `vimvibe-core pointer-setup` once");
+        // setup asks for pointer + keyboard; afterwards exactly what was granted is requested again (no new dialog)
+        let want = if interactive || keyboard_granted() { DeviceType::Pointer | DeviceType::Keyboard } else { BitFlags::from(DeviceType::Pointer) };
         let rd = RemoteDesktop::new().await?;
         let session = rd.create_session(CreateSessionOptions::default()).await?;
         rd.select_devices(
             &session,
             SelectDevicesOptions::default()
-                .set_devices(BitFlags::from(DeviceType::Pointer))
+                .set_devices(want)
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
-                .set_restore_token(token.as_deref()),
+                .set_restore_token(if interactive { None } else { token.as_deref() }),
         )
         .await?
         .response()?;
         let started = rd.start(&session, None, StartOptions::default()).await?.response()?;
-        anyhow::ensure!(started.devices().contains(DeviceType::Pointer), "the portal did not grant pointer control");
+        let devices = started.devices();
+        anyhow::ensure!(devices.contains(DeviceType::Pointer), "the portal did not grant pointer control");
         if let Some(t) = started.restore_token() {
             write_token(t)?;
         }
-        Ok(Pointer { rd, session })
+        let keyboard = devices.contains(DeviceType::Keyboard);
+        if interactive {
+            std::fs::write(devices_path(), if keyboard { "pointer,keyboard" } else { "pointer" })?;
+        }
+        Ok(Pointer { rd, session, keyboard })
+    }
+
+    /// Whether this session can type (the user granted the keyboard).
+    pub fn has_keyboard(&self) -> bool {
+        self.keyboard
+    }
+
+    /// Press or release a key by X keysym (e.g. 0xff54 = Down) in the focused window.
+    pub async fn key(&self, keysym: i32, pressed: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(self.keyboard, "keyboard control was not granted; run `vimvibe-core pointer-setup` again and allow the keyboard");
+        let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+        self.rd.notify_keyboard_keysym(&self.session, keysym, state, NotifyKeyboardKeysymOptions::default()).await?;
+        Ok(())
+    }
+
+    /// Tap a key (press, release).
+    pub async fn tap(&self, keysym: i32) -> anyhow::Result<()> {
+        self.key(keysym, true).await?;
+        self.key(keysym, false).await
     }
 
     /// Move the pointer by (dx, dy) through the portal.

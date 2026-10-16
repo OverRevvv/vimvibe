@@ -72,13 +72,17 @@ enum Cmd {
         #[arg(short, long, default_value_t = 15)]
         limit: usize,
     },
-    /// One-time: ask the desktop (RemoteDesktop portal) for permission to click for you. Shows a consent dialog;
+    /// One-time: ask the desktop (RemoteDesktop portal) for permission to click, scroll and send arrow keys for you. Shows a consent dialog;
     /// nothing else in vimvibe ever opens it. The approval is remembered through a restore token.
     PointerSetup,
     /// Print the real pointer position (logical px) as KWin reports it.
     Cursor,
     /// List panels, open popups and windows as KWin sees them (kind, class, pid, geometry; no titles).
     Surfaces,
+    /// Press keys in the focused window through the portal, e.g. `key j j space` (testing; needs keyboard permission).
+    /// Each argument is an X keysym name (a letter, digit, `space`, `Down`, ...) or a hex keysym like `0xff54`;
+    /// `+name` only presses, `-name` only releases.
+    Key { keys: Vec<String> },
     /// Click at screen coordinates through the portal (needs `pointer-setup` first).
     Click {
         x: f64,
@@ -133,6 +137,26 @@ async fn main() -> anyhow::Result<()> {
         set_session_accessibility(true).await?;
     }
     match cli.cmd {
+        Cmd::Key { keys } => {
+            let p = pointer::Pointer::connect(false).await?;
+            for k in keys {
+                let (press, release, name) = match k.chars().next() {
+                    Some('+') if k.len() > 1 => (true, false, &k[1..]),
+                    Some('-') if k.len() > 1 => (false, true, &k[1..]),
+                    _ => (true, true, k.as_str()),
+                };
+                let sym = keysym(name).ok_or_else(|| anyhow::anyhow!("unknown key {name}"))?;
+                if press {
+                    p.key(sym, true).await?;
+                }
+                if release {
+                    p.key(sym, false).await?;
+                }
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+            p.close().await;
+            return Ok(());
+        }
         Cmd::Surfaces => {
             let list = kwin::surfaces(Duration::from_millis(1000)).await.ok_or_else(|| anyhow::anyhow!("KWin scripting unavailable"))?;
             for s in list {
@@ -148,9 +172,10 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Cmd::PointerSetup => {
-            println!("A permission dialog from your desktop will appear: approve it to let vimvibe click for you.");
+            println!("A permission dialog from your desktop will appear: approve it to let vimvibe click, scroll and send");
+            println!("arrow keys for you (tick the keyboard as well as the pointer for arrow keys).");
             let p = pointer::Pointer::connect(true).await?;
-            println!("pointer control granted; token saved to {}", pointer::token_path().display());
+            println!("granted: pointer{}; token saved to {}", if p.has_keyboard() { " and keyboard" } else { " only (no arrow keys)" }, pointer::token_path().display());
             p.close().await;
             return Ok(());
         }
@@ -302,6 +327,32 @@ async fn serve(conn: &AccessibilityConnection, win: &enumerate::Window, els: &[m
         }
     }
     Ok(())
+}
+
+/// X keysym for a key name used by the `key` command: one letter/digit, a few named keys, or `0x…` hex.
+fn keysym(name: &str) -> Option<i32> {
+    if let Some(hex) = name.strip_prefix("0x") {
+        return i32::from_str_radix(hex, 16).ok();
+    }
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.clone().next()) {
+        if c.is_ascii_alphanumeric() {
+            return Some(c.to_ascii_lowercase() as i32); // Latin-1 keysyms equal the character code
+        }
+    }
+    Some(match name {
+        "space" => 0x20,
+        "Return" => 0xff0d,
+        "Escape" => 0xff1b,
+        "Tab" => 0xff09,
+        "Left" => 0xff51,
+        "Up" => 0xff52,
+        "Right" => 0xff53,
+        "Down" => 0xff54,
+        "Shift_L" => 0xffe1,
+        "Control_L" => 0xffe3,
+        _ => return None,
+    })
 }
 
 /// Shorten `s` to `n` characters for table output.

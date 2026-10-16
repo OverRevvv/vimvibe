@@ -11,6 +11,7 @@
 //!   ActivateWith(id, action) -> json  same with action click | right | double | middle | hover | focus
 //!   Refresh() -> json     re-read the same window (emits Opened again)
 //!   ScrollStart(id), Scroll(dx, dy), ScrollEnd()   scroll the element `id` (or the window) with wheel clicks
+//!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
 //! Apps listed under [apps] exclude in ~/.config/vimvibe/config.toml are never read: Trigger emits Refused instead
 //! (also emitted, with only `error`, when the focused window cannot be read).
 //!   Close()               drop the snapshot; emits `Closed`
@@ -105,6 +106,8 @@ struct Shared {
     grab_started: tokio::sync::Notify,
     /// Menus that are open right now (Qt keeps them out of the tree; see popups.rs).
     menus: Option<Arc<crate::popups::Menus>>,
+    /// Keystroke listener state (mode, "seen" flag), shared with the listener object (keygrab.rs).
+    keys: Arc<crate::keygrab::State>,
     /// While scrolling: where the pointer was before we parked it over the scroll target (restored at the end).
     scroll_origin: Mutex<Option<(f64, f64)>>,
 }
@@ -259,6 +262,74 @@ impl Daemon {
         }
     }
 
+    /// Start arrow mode (Space + H/J/K/L): close the overlay so the app has the keyboard again, take the physical
+    /// H J K L / I, Space and Esc keys through the keystroke listener, check the app really hands its keys over (a
+    /// harmless Shift tap must arrive), then send the first arrow (dx, dy). Needs the keyboard permission; without it
+    /// the answer says `"fallback": "scroll"` and nothing changes.
+    async fn arrow_start(&self, dx: i32, dy: i32, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        use std::sync::atomic::Ordering::SeqCst;
+        let sh = &self.0;
+        if sh.snap.lock().await.is_none() {
+            return json!({"ok": false, "error": "no open snapshot"}).to_string();
+        }
+        if let Err(e) = keyboard_session(sh).await {
+            return json!({"ok": false, "fallback": "scroll", "error": e.to_string()}).to_string();
+        }
+        let target = sh.focus.lock().await.clone();
+        let app = target.as_ref().map(|f| f.class.clone()).unwrap_or_default();
+        close(sh, &em).await;
+        // The keys we send go to whichever window has the keyboard: wait until KWin reports the app active again
+        // (the overlay hides first), so neither the check below nor the arrows land in vimvibe's own window.
+        let mut back = false;
+        for _ in 0..25 {
+            if let Some(f) = kwin::active_window(Duration::from_millis(200)).await {
+                if f.caption != UI_CAPTION && target.as_ref().is_none_or(|t| t.pid == f.pid) {
+                    back = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        if !back {
+            open(sh, &em).await;
+            return json!({"ok": false, "error": "the app did not get the keyboard back"}).to_string();
+        }
+        if let Err(e) = crate::keygrab::grab(sh.a11y.connection(), &sh.keys, crate::keygrab::MODE_ARROWS).await {
+            crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
+            open(sh, &em).await;
+            return json!({"ok": false, "error": format!("could not read keys: {e}")}).to_string();
+        }
+        sh.grabbed.store(true, SeqCst);
+        sh.grab_started.notify_one();
+        // Only apps that hand their keys to the accessibility registry (Qt, GTK 3) let us tell the user's H/J/K/L
+        // apart from typing. Check with a Shift tap: if the listener never sees it, J would be typed into the app.
+        sh.keys.seen.store(false, SeqCst);
+        send_arrow(sh, XK_SHIFT_L).await;
+        let mut ok = false;
+        for _ in 0..20 {
+            if sh.keys.seen.load(SeqCst) {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if !ok {
+            end_arrows(sh, &em, true).await;
+            return json!({"ok": false, "error": format!("{app} doesn't share its key presses with accessibility, so vimvibe can't send arrow keys there (works in KDE/Qt and GTK 3 apps such as Firefox). Space+Ctrl+H/J/K/L scrolls instead.")}).to_string();
+        }
+        if let Some(ks) = arrow_keysym(dx, dy) {
+            send_arrow(sh, ks).await;
+        }
+        json!({"ok": true}).to_string()
+    }
+
+    /// Leave arrow mode (the UI saw Space released itself); `reopen` brings the overlay back.
+    async fn arrow_end(&self, reopen: bool, #[zbus(signal_emitter)] em: SignalEmitter<'_>) {
+        if self.0.keys.mode.load(std::sync::atomic::Ordering::SeqCst) == crate::keygrab::MODE_ARROWS {
+            end_arrows(&self.0, &em, reopen).await;
+        }
+    }
+
     /// Re-read the same window (Shortcat's Cmd+R): drops the snapshot without `Closed`, then emits `Opened` again.
     async fn refresh(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         self.0.snap.lock().await.take();
@@ -281,6 +352,7 @@ impl Daemon {
             "focus": *self.0.focus.lock().await,
             "snapshot_open": self.0.snap.lock().await.is_some(),
             "pointer": if self.0.pointer.lock().await.is_some() { "ready" } else if crate::pointer::is_set_up() { "set up (connects on first use)" } else { "not set up (run: vimvibe-core pointer-setup)" },
+            "keyboard": crate::pointer::keyboard_granted(),
             "last": *self.0.stats.lock().await,
         })
         .to_string()
@@ -432,9 +504,94 @@ async fn pointer_action(sh: &Shared, el: &Element, geometry: Option<(i32, i32, i
 }
 
 /// Release the keyboard grab if any, drop the snapshot and emit `Closed` (no-op when nothing is open).
+/// X keysyms of the arrow keys.
+const XK_LEFT: i32 = 0xff51;
+const XK_UP: i32 = 0xff52;
+const XK_RIGHT: i32 = 0xff53;
+const XK_DOWN: i32 = 0xff54;
+const XK_SHIFT_L: i32 = 0xffe1;
+
+/// Arrow keysym for a direction (dx, dy).
+fn arrow_keysym(dx: i32, dy: i32) -> Option<i32> {
+    Some(match (dx.signum(), dy.signum()) {
+        (-1, 0) => XK_LEFT,
+        (1, 0) => XK_RIGHT,
+        (0, -1) => XK_UP,
+        (0, 1) => XK_DOWN,
+        _ => return None,
+    })
+}
+
+/// Direction of a physical key in arrow mode for the configured layout ("hjkl" or "ijkl").
+fn arrow_for(code: u32, layout: &str) -> Option<(i32, i32)> {
+    use crate::keygrab::{KC_H, KC_I, KC_J, KC_K, KC_L};
+    Some(match (layout, code) {
+        ("ijkl", KC_I) => (0, -1),
+        ("ijkl", KC_J) => (-1, 0),
+        ("ijkl", KC_K) => (0, 1),
+        ("ijkl", KC_L) => (1, 0),
+        (_, KC_H) if layout != "ijkl" => (-1, 0),
+        (_, KC_J) => (0, 1),
+        (_, KC_K) => (0, -1),
+        (_, KC_L) => (1, 0),
+        _ => return None,
+    })
+}
+
+/// A pointer+keyboard portal session, (re)connected when the grant includes the keyboard but the cached session
+/// doesn't. Errors when the keyboard was never granted.
+async fn keyboard_session(sh: &Shared) -> anyhow::Result<()> {
+    let mut guard = sh.pointer.lock().await;
+    if guard.as_ref().is_some_and(|p| p.has_keyboard()) {
+        return Ok(());
+    }
+    anyhow::ensure!(crate::pointer::keyboard_granted(), "arrow keys need keyboard permission: run `vimvibe-core pointer-setup` and allow the keyboard");
+    *guard = Some(crate::pointer::Pointer::connect(false).await?);
+    anyhow::ensure!(guard.as_ref().is_some_and(|p| p.has_keyboard()), "the desktop did not grant the keyboard");
+    Ok(())
+}
+
+/// Send one arrow key (tap) to the focused window.
+async fn send_arrow(sh: &Shared, keysym: i32) {
+    if let Some(p) = sh.pointer.lock().await.as_ref() {
+        if let Err(e) = p.tap(keysym).await {
+            eprintln!("arrow key failed: {e}");
+        }
+    }
+}
+
+/// A key the listener took in arrow mode: H/J/K/L (or I/J/K/L) send arrows, Space release ends the mode and brings
+/// the overlay back, Esc ends it without the overlay.
+async fn arrow_key(sh: &Shared, em: &SignalEmitter<'_>, k: &crate::keygrab::Key) {
+    use crate::keygrab::{KC_ESC, KC_SPACE};
+    match (k.code, k.pressed) {
+        (KC_ESC, true) => end_arrows(sh, em, false).await,
+        (KC_SPACE, false) => end_arrows(sh, em, true).await,
+        (code, true) => {
+            let layout = config::load().scroll.keys;
+            if let Some((dx, dy)) = arrow_for(code, &layout) {
+                if let Some(ks) = arrow_keysym(dx, dy) {
+                    send_arrow(sh, ks).await;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Leave arrow mode: give every key back to the app, and reopen the overlay on the (changed) window if asked.
+async fn end_arrows(sh: &Shared, em: &SignalEmitter<'_>, reopen: bool) {
+    if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
+    }
+    if reopen {
+        open(sh, em).await;
+    }
+}
+
 async fn close(sh: &Shared, em: &SignalEmitter<'_>) {
     if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        crate::keygrab::release(sh.a11y.connection()).await;
+        crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
     }
     if sh.snap.lock().await.take().is_some() {
         let _ = Daemon::closed(em).await;
@@ -597,13 +754,13 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
         *sh.snap.lock().await = Some(Snapshot { hints, els, last: vec![], geometry, extra, in_menu });
         let generation = sh.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         if popup_mode {
-            match crate::keygrab::grab(sh.a11y.connection()).await {
+            match crate::keygrab::grab(sh.a11y.connection(), &sh.keys, crate::keygrab::MODE_POPUP).await {
                 Ok(()) => {
                     sh.grabbed.store(true, std::sync::atomic::Ordering::SeqCst);
                     sh.grab_started.notify_one();
                 }
                 Err(e) => {
-                    crate::keygrab::release(sh.a11y.connection()).await;
+                    crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
                     *sh.snap.lock().await = None;
                     anyhow::bail!("could not read keys over this popup: {e}");
                 }
@@ -685,6 +842,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         grab_started: Default::default(),
         menus,
         scroll_origin: Mutex::new(None),
+        keys: Default::default(),
     });
     let conn = zbus::connection::Builder::session()?
         .name(NAME)
@@ -698,7 +856,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
     // keys typed over a popup (see keygrab.rs): Esc closes here, so the keyboard is released even without a UI
     {
         let (ktx, mut krx) = tokio::sync::mpsc::unbounded_channel();
-        if let Err(e) = crate::keygrab::serve(sh.a11y.connection(), ktx).await {
+        if let Err(e) = crate::keygrab::serve(sh.a11y.connection(), ktx, sh.keys.clone()).await {
             eprintln!("keystroke listener unavailable ({e}); popups will be closed by the overlay");
         }
         let (sh2, em2) = (sh.clone(), em.clone());
@@ -724,7 +882,11 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
                 if !sh2.grabbed.load(Relaxed) {
                     continue;
                 }
-                if k.name == "Escape" {
+                if sh2.keys.mode.load(Relaxed) == crate::keygrab::MODE_ARROWS {
+                    arrow_key(&sh2, &em2, &k).await;
+                } else if !k.pressed {
+                    // popup mode forwards presses only
+                } else if k.name == "Escape" {
                     close(&sh2, &em2).await;
                 } else {
                     let _ = Daemon::key(&em2, &serde_json::to_string(&k).unwrap_or_default()).await;
@@ -809,4 +971,25 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
     }
     eprintln!("vimvibe daemon stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keygrab::{KC_H, KC_I, KC_J, KC_K, KC_L};
+
+    #[test]
+    fn arrow_layouts() {
+        assert_eq!(arrow_for(KC_H, "hjkl"), Some((-1, 0)));
+        assert_eq!(arrow_for(KC_J, "hjkl"), Some((0, 1)));
+        assert_eq!(arrow_for(KC_K, "hjkl"), Some((0, -1)));
+        assert_eq!(arrow_for(KC_L, "hjkl"), Some((1, 0)));
+        assert_eq!(arrow_for(KC_I, "hjkl"), None);
+        assert_eq!(arrow_for(KC_I, "ijkl"), Some((0, -1)));
+        assert_eq!(arrow_for(KC_J, "ijkl"), Some((-1, 0)));
+        assert_eq!(arrow_for(KC_K, "ijkl"), Some((0, 1)));
+        assert_eq!(arrow_for(KC_H, "ijkl"), None);
+        assert_eq!(arrow_keysym(0, 1), Some(XK_DOWN));
+        assert_eq!(arrow_keysym(-1, 0), Some(XK_LEFT));
+    }
 }

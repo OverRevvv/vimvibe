@@ -299,7 +299,17 @@ pub async fn run(fix: bool, fix_env: bool, json: bool) -> anyhow::Result<i32> {
 
     // pointer fallback
     out.push(if crate::pointer::is_set_up() {
-        check("pointer", Status::Ok, "Pointer-click fallback approved (RemoteDesktop portal token present)", vec![format!("token: {}", crate::pointer::token_path().display())], None)
+        if crate::pointer::keyboard_granted() {
+            check("pointer", Status::Ok, "Pointer and keyboard approved (clicks, scrolling, arrow keys)", vec![format!("token: {}", crate::pointer::token_path().display())], None)
+        } else {
+            check(
+                "pointer",
+                Status::Info,
+                "Pointer approved (clicks, scrolling); keyboard not approved, so Space + H/J/K/L arrow keys are off",
+                vec![format!("token: {}", crate::pointer::token_path().display()), "Run setup again and allow the keyboard as well".into()],
+                Some("vimvibe-core pointer-setup"),
+            )
+        }
     } else {
         check(
             "pointer",
