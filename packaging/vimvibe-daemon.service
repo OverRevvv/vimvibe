@@ -1,0 +1,15 @@
+# systemd user unit (not installed automatically). Install with:
+#   install -Dm644 packaging/vimvibe-daemon.service ~/.config/systemd/user/vimvibe-daemon.service
+#   systemctl --user daemon-reload && systemctl --user enable --now vimvibe-daemon
+[Unit]
+Description=vimvibe daemon (keyboard-driven UI element search)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/vimvibe-core daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
