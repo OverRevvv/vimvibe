@@ -9,13 +9,13 @@ own: label/flag theme (colours, font, sizes), panel look, excluded apps, accessi
 import json, os, shutil, subprocess
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialogButtonBox, QDoubleSpinBox, QFontComboBox,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
                                QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from vimvibe_style import CONFIG, PRESETS, PROFILE, Theme
+from vimvibe_style import CONFIG, PRESETS, PROFILE, Theme, icon_path
 
 DELAYS = [("Immediately", 0), ("After 200 ms", 200), ("After 500 ms", 500), ("After 1 second", 1000),
           ("After 2 seconds (Shortcat's default)", 2000), ("After 5 seconds", 5000), ("After input", -1)]
@@ -133,6 +133,8 @@ class SettingsWindow(QWidget):
         self.read_config, self.write_config, self.defaults = read_config, write_config, defaults
         self.loading = False
         self.setWindowTitle(f"vimvibe Settings ({PROFILE} profile)" if PROFILE else "vimvibe Settings")
+        if icon_path():
+            self.setWindowIcon(QIcon(icon_path()))
         self.resize(760, 680)
         tabs = QTabWidget()
         tabs.addTab(self.general_tab(), "General")
@@ -477,4 +479,4 @@ class SettingsWindow(QWidget):
         os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
         with open(AUTOSTART, "w") as f:
             f.write("[Desktop Entry]\nType=Application\nName=vimvibe\nComment=Click anything by typing its name\n"
-                    f"Exec={launcher()} start\nIcon=input-keyboard\nX-KDE-autostart-phase=2\nNoDisplay=true\n")
+                    f"Exec={launcher()} start\nIcon=vimvibe\nX-KDE-autostart-phase=2\nNoDisplay=true\n")

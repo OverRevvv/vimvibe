@@ -14,6 +14,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   "$BIN/vimvibe" stop 2>/dev/null || true
   rm -f "$BIN/vimvibe-core" "$BIN/vimvibe" "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/vimvibe.desktop" \
         "${XDG_DATA_HOME:-$HOME/.local/share}/applications/vimvibe.desktop"
+  find "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" -name 'vimvibe.*' -delete 2>/dev/null || true
   rm -rf "$SHARE"
   echo "vimvibe removed (settings kept in ${XDG_CONFIG_HOME:-$HOME/.config}/vimvibe)"
   exit 0
@@ -42,12 +43,18 @@ install -Dm755 "$TARGET/release/vimvibe-core" "$BIN/vimvibe-core"
 install -Dm644 palette/vimvibe_palette.py "$SHARE/vimvibe_palette.py"
 install -Dm644 palette/vimvibe_settings.py "$SHARE/vimvibe_settings.py"
 install -Dm644 palette/vimvibe_style.py "$SHARE/vimvibe_style.py"
+install -Dm644 packaging/icons/vimvibe.svg "$SHARE/vimvibe.svg"   # for the overlay's and Settings' window icon
 sed -e "s|@CORE@|$BIN/vimvibe-core|" -e "s|@PALETTE_DIR@|$SHARE|" packaging/vimvibe > "$BIN/vimvibe"
 chmod 755 "$BIN/vimvibe"
+# the icon, in the standard places the desktop looks (app menu, task manager, notifications)
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+mkdir -p "$DATA/icons/hicolor"
+cp -r packaging/icons/hicolor/. "$DATA/icons/hicolor/"
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true
 # app menu entry for the Settings window; also lets the overlay register its app id ("vimvibe") with the desktop
-APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+APPS="$DATA/applications"
 mkdir -p "$APPS"
-printf '[Desktop Entry]\nType=Application\nName=vimvibe Settings\nComment=Click anything by typing its name\nExec=%s settings\nIcon=input-keyboard\nCategories=Utility;Accessibility;\n' "$BIN/vimvibe" > "$APPS/vimvibe.desktop"
+printf '[Desktop Entry]\nType=Application\nName=vimvibe Settings\nComment=Click anything by typing its name\nExec=%s settings\nIcon=vimvibe\nCategories=Utility;Accessibility;\n' "$BIN/vimvibe" > "$APPS/vimvibe.desktop"
 
 if [ "$was_running" = 1 ]; then
   echo "starting the upgraded vimvibe again…"

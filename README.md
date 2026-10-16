@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="vimvibe icon: a keycap with a V on a keyboard" width="112" align="right">
+
 # vimvibe
 
 **Click anything on your Linux desktop by typing its name — or the two letters on its label.**
@@ -69,6 +71,8 @@ git clone <this repo> vimvibe && cd vimvibe
 | `~/.local/bin/vimvibe-core` | the core and daemon |
 | `~/.local/bin/vimvibe` | launcher: `start`, `stop`, `settings`, `doctor`, … |
 | `~/.local/share/vimvibe/` | the overlay and the Settings window |
+| `~/.local/share/icons/hicolor/…/vimvibe.*` | the icon (SVG + 16–512 px PNGs) |
+| `~/.local/share/applications/vimvibe.desktop` | the "vimvibe Settings" entry in your app menu |
 
 Make sure `~/.local/bin` is on your `PATH` (Fedora has it by default). Uninstall with `./install.sh --uninstall`
 (your settings in `~/.config/vimvibe/` are kept).
@@ -401,6 +405,7 @@ core/                Rust: AT-SPI reading, matching, labels, KWin bridge, daemon
   src/pointer.rs     RemoteDesktop portal clicks
   src/config.rs      ~/.config/vimvibe/config.toml (parts the daemon enforces), profiles (dev next to installed)
   src/doctor.rs      setup check
+packaging/icons/     the icon: vimvibe.svg (edit this) and the generated PNG sizes (`python3 packaging/icons/make-icons.py`)
 palette/             Python/Qt: overlay (vimvibe_palette.py), Settings window (vimvibe_settings.py),
                      shared config + theme (vimvibe_style.py)
 packaging/           launcher script, optional systemd user unit

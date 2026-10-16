@@ -17,6 +17,16 @@ CONFIG_READ = CONFIG if os.path.exists(CONFIG) or not PROFILE else os.path.join(
 
 DEFAULT_ACCENT = "#3b82f6"
 
+
+def icon_path():
+    """The vimvibe icon (SVG): next to the scripts when installed, packaging/icons/ in the source tree; "" if absent."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(here, "vimvibe.svg"), os.path.join(here, "..", "packaging", "icons", "vimvibe.svg")):
+        if os.path.exists(p):
+            return os.path.normpath(p)
+    return ""
+
+
 DEFAULTS = {
     "ui": {
         "theme": "Blue",            # preset the colours below came from (informational; the colours are what count)

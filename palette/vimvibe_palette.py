@@ -34,10 +34,10 @@ import argparse, json, os, sys
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusPendingCallWatcher, QDBusServiceWatcher
-from PySide6.QtGui import QColor, QFontMetricsF, QGuiApplication, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QIcon, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
-from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, read_config, write_config
+from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, read_config, write_config
 
 # the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
 SERVICE, PATH, IFACE = "org.vimvibe.Daemon" + PROFILE.capitalize(), "/org/vimvibe/Daemon", "org.vimvibe.Daemon"
@@ -75,7 +75,7 @@ def notify(summary, body):
         return
     _last_notice[(summary, body)] = now
     if shutil.which("notify-send"):
-        subprocess.Popen(["notify-send", "-a", "vimvibe", "-i", "input-keyboard", "-t", "4000", summary, body],
+        subprocess.Popen(["notify-send", "-a", "vimvibe", "-i", icon_path() or "input-keyboard", "-t", "4000", summary, body],
                          stderr=subprocess.DEVNULL)
     print(f"{summary}: {body}", file=sys.stderr, flush=True)
 
@@ -823,6 +823,8 @@ def main():
     a = ap.parse_args()
     app = QApplication(sys.argv)
     app.setApplicationName("vimvibe")
+    if icon_path():
+        app.setWindowIcon(QIcon(icon_path()))
     if desktop_entry_installed():
         # names our windows "vimvibe"; Qt also registers that app id with the desktop portal, which only works when a
         # matching vimvibe.desktop exists (install.sh adds it), otherwise the portal logs an error
