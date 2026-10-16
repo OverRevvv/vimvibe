@@ -1,22 +1,24 @@
-"""vimvibe Settings window (opened with `vimvibe_palette.py --settings`, or `vimvibe settings`).
+"""vimvibe Settings window. Opens with Ctrl+Shift+, from anywhere (Ctrl+, while the overlay is open), like Shortcat's
+Preferences, or with `vimvibe settings` / `vimvibe_palette.py --settings`.
 
 Edits ~/.config/vimvibe/config.toml. The overlay and the daemon re-read that file every time the overlay opens, so
-changes apply on the next use without restarting anything. Mirrors Shortcat's Preferences where it makes sense on
-Linux (shortcut, launch at login, label delay, continuous mode) and adds what vimvibe needs (excluded apps,
-accessibility setup, pointer permission, label colour).
+changes apply on the next use without restarting anything. Covers Shortcat's preferences that make sense on Linux
+(shortcut, launch at login, label delay, continuous mode, hide the query pane, HJKL/IJKL scroll keys) plus vimvibe's
+own: label/flag theme (colours, font, sizes), panel look, excluded apps, accessibility and pointer setup.
 """
-import os, shutil, subprocess
+import json, os, shutil, subprocess
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit,
-                               QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialogButtonBox, QDoubleSpinBox, QFontComboBox,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
+                               QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
+                               QWidget)
+
+from vimvibe_style import PRESETS, Theme
 
 DELAYS = [("Immediately", 0), ("After 200 ms", 200), ("After 500 ms", 500), ("After 1 second", 1000),
           ("After 2 seconds (Shortcat's default)", 2000), ("After 5 seconds", 5000), ("After input", -1)]
-PRESETS = [("Blue", "#3b82f6"), ("Shortcat yellow", "#facc15"), ("Green", "#22c55e"), ("Purple", "#a855f7"),
-           ("Orange", "#f97316"), ("Pink", "#ec4899"), ("Red", "#ef4444"), ("Teal", "#14b8a6")]
 AUTOSTART = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "autostart", "vimvibe.desktop")
 
 
@@ -30,13 +32,108 @@ def launcher():
     return shutil.which("vimvibe") or os.path.expanduser("~/.local/bin/vimvibe")
 
 
+class ColorField(QWidget):
+    """A colour setting: text field (a colour name/#hex, or "auto" where allowed), a swatch, and a picker button."""
+
+    def __init__(self, allow_auto, on_change):
+        """`allow_auto` adds an Automatic checkbox; `on_change` is called on every edit (for the live preview)."""
+        super().__init__()
+        lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0)
+        self.auto = QCheckBox("Automatic") if allow_auto else None
+        self.text = QLineEdit(); self.text.setMaximumWidth(110)
+        self.swatch = QPushButton(); self.swatch.setFixedWidth(40); self.swatch.setToolTip("Pick a colour")
+        self.swatch.clicked.connect(self.pick)
+        self.text.textChanged.connect(lambda _: (self.paint_swatch(), on_change()))
+        if self.auto:
+            self.auto.toggled.connect(lambda on: (self.text.setEnabled(not on), self.swatch.setEnabled(not on), on_change()))
+            lay.addWidget(self.auto)
+        lay.addWidget(self.text); lay.addWidget(self.swatch); lay.addStretch()
+
+    def paint_swatch(self):
+        """Show the current colour on the swatch button."""
+        c = QColor(self.text.text())
+        self.swatch.setStyleSheet(f"background: {c.name() if c.isValid() else 'transparent'}; border: 1px solid #888;")
+
+    def pick(self):
+        """Choose a colour with the colour dialog."""
+        c = QColorDialog.getColor(QColor(self.text.text()), self, "Colour")
+        if c.isValid():
+            self.text.setText(c.name())
+
+    def set(self, value):
+        """Show a setting value ("auto" ticks Automatic)."""
+        is_auto = value in ("", "auto")
+        if self.auto:
+            self.auto.setChecked(is_auto)
+        self.text.setText("" if is_auto and self.auto else str(value))
+        self.paint_swatch()
+
+    def value(self):
+        """The setting value: "auto", or the colour text."""
+        if self.auto and self.auto.isChecked():
+            return "auto"
+        return self.text.text().strip()
+
+    def valid(self):
+        """Whether the field holds something usable."""
+        return self.value() == "auto" or QColor(self.value()).isValid()
+
+
+class Preview(QWidget):
+    """Live preview of the current Appearance settings: three mock buttons with labels (one selected) and a result row,
+    drawn with the overlay's own Theme code."""
+
+    def __init__(self, settings_window):
+        """`settings_window.collect()` supplies the settings to preview."""
+        super().__init__()
+        self.sw = settings_window
+        self.setMinimumHeight(150)
+
+    def paintEvent(self, _):
+        """Draw the mock window, its labelled buttons and one panel row."""
+        cfg = self.sw.collect()
+        t = Theme(cfg)
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        win = QRectF(8, 8, self.width() - 16, 70)
+        p.fillRect(win, QColor(60, 63, 70)); p.setPen(QColor(210, 212, 218))
+        x = win.x() + 14
+        for i, (name, hint) in enumerate([("Save", "SA"), ("Cancel", "CA"), ("Open folder", "OF")]):
+            r = QRectF(x, win.y() + 18, 30 + 9 * len(name), 34)
+            path = QPainterPath(); path.addRoundedRect(r, 5, 5)
+            p.fillPath(path, QColor(84, 88, 98)); p.setPen(QColor(230, 232, 238)); p.setFont(t.row_font)
+            p.drawText(r.adjusted(8, 0, 0, 0), Qt.AlignVCenter, name)
+            if i == 1:  # the selected element
+                fill = QColor(t.selected); fill.setAlpha(80)
+                p.setPen(QPen(t.selected, 2)); p.setBrush(fill); p.drawRoundedRect(r.adjusted(-2, -2, 2, 2), 4, 4); p.setBrush(Qt.NoBrush)
+            w, h = t.label_size(hint)
+            lr = QRectF(r.right() - w - 1, r.center().y() - h / 2, w, h)
+            t.draw_label(p, lr, hint, typed=1 if i == 2 else 0, selected=(i == 1))
+            x = r.right() + 24
+        panel = QRectF(8, win.bottom() + 10, min(self.width() - 16, t.panel_width), t.row_h + 16)
+        path = QPainterPath(); path.addRoundedRect(panel, 10, 10)
+        p.fillPath(path, t.panel_bg); p.setPen(QPen(t.panel_border, 1)); p.drawPath(path)
+        row = panel.adjusted(8, 8, -8, -8)
+        sel = QColor(t.selected); sel.setAlpha(75)
+        rp = QPainterPath(); rp.addRoundedRect(row, 7, 7); p.fillPath(rp, sel)
+        p.setFont(t.row_font); p.setPen(t.panel_text); p.drawText(row.adjusted(10, 0, 0, 0), Qt.AlignVCenter, "Cancel")
+        w, h = t.label_size("CA")
+        t.draw_label(p, QRectF(row.right() - 70 - w, row.center().y() - h / 2, w, h), "CA")
+        p.setFont(t.small_font); p.setPen(t.panel_role)
+        p.drawText(QRectF(row.right() - 70 - w - 70, row.y(), 60, row.height()), Qt.AlignVCenter | Qt.AlignRight, "Button")
+        kr = QRectF(row.right() - 54, row.y() + 4, 22, row.height() - 8)
+        for r_, s in ((kr, "⌃"), (kr.translated(26, 0), "1")):
+            kp = QPainterPath(); kp.addRoundedRect(r_, 5, 5); p.fillPath(kp, t.key_bg)
+            p.setFont(t.key_font); p.setPen(t.key_fg); p.drawText(r_, Qt.AlignCenter, s)
+
+
 class SettingsWindow(QWidget):
     def __init__(self, read_config, write_config, defaults):
-        """Build the five tabs and load the current settings into them."""
+        """Build the tabs and load the current settings into them."""
         super().__init__()
         self.read_config, self.write_config, self.defaults = read_config, write_config, defaults
+        self.loading = False
         self.setWindowTitle("vimvibe Settings")
-        self.resize(620, 560)
+        self.resize(760, 680)
         tabs = QTabWidget()
         tabs.addTab(self.general_tab(), "General")
         tabs.addTab(self.appearance_tab(), "Appearance")
@@ -52,54 +149,108 @@ class SettingsWindow(QWidget):
         lay.addWidget(buttons)
         self.load(self.read_config())
 
+    def changed(self):
+        """Any appearance control changed: refresh the preview."""
+        if not self.loading and hasattr(self, "preview"):
+            self.preview.update()
+
     # --- tabs -----------------------------------------------------------------------
     def general_tab(self):
-        """Shortcut info, launch at login, and which extra results to offer."""
+        """Shortcuts, launch at login, and which extra results to offer."""
         w = QWidget(); f = QFormLayout(w)
-        shortcut = QHBoxLayout()
-        shortcut.addWidget(QLabel("<b>Meta+Shift+Space</b> by default"))
-        b = QPushButton("Change in System Settings…")
+        keys = QLabel("<b>Meta+Shift+Space</b> open / close &nbsp;·&nbsp; <b>Meta+Shift+Q</b> quit vimvibe "
+                      "&nbsp;·&nbsp; <b>Ctrl+Shift+,</b> these settings", textFormat=Qt.RichText, wordWrap=True)
+        f.addRow("Shortcuts:", keys)
+        b = QPushButton("Change them in System Settings…")
         b.clicked.connect(lambda: self.run_detached(["systemsettings", "kcm_keys"]))
-        shortcut.addWidget(b)
-        f.addRow("Activation shortcut:", shortcut)
-        f.addRow("", QLabel("<small>KDE keeps the shortcut under Shortcuts → <i>vimvibe</i> → Toggle palette. "
-                            "Other desktops: bind any key to<br><code>gdbus call --session --dest org.vimvibe.Daemon "
-                            "--object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Trigger</code></small>",
-                            textFormat=Qt.RichText, wordWrap=True))
+        f.addRow("", b)
+        f.addRow("", QLabel("<small>KDE keeps them under Shortcuts → <i>vimvibe</i>. Other desktops: bind any key to "
+                            "<code>gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon "
+                            "--method org.vimvibe.Daemon.Trigger</code></small>", textFormat=Qt.RichText, wordWrap=True))
         self.login = QCheckBox("Start vimvibe when I log in")
         f.addRow("Launch at login:", self.login)
         self.windows = QCheckBox("Also offer my other open windows as results (window switching)")
         f.addRow("Search:", self.windows)
         self.apps_search = QCheckBox("Also offer installed applications (type a name, Enter launches it)")
         f.addRow("", self.apps_search)
+        self.panel_labels = QCheckBox("Label the taskbar and other panels too (only while they are visible)")
+        f.addRow("", self.panel_labels)
         return w
 
     def appearance_tab(self):
-        """Label colour (with presets), label size and panel position."""
-        w = QWidget(); f = QFormLayout(w)
-        row = QHBoxLayout()
-        self.accent = QLineEdit(); self.accent.setMaximumWidth(110)
-        self.swatch = QPushButton(); self.swatch.setFixedWidth(40)
-        self.swatch.clicked.connect(self.pick_colour)
-        self.accent.textChanged.connect(self.update_swatch)
-        row.addWidget(self.accent); row.addWidget(self.swatch)
-        self.preset = QComboBox(); self.preset.addItem("Presets…")
-        for name, hexv in PRESETS:
-            self.preset.addItem(name, hexv)
-        self.preset.activated.connect(lambda i: i and self.accent.setText(self.preset.itemData(i)))
-        row.addWidget(self.preset); row.addStretch()
-        f.addRow("Label & highlight colour:", row)
+        """Theme presets, label (flag) colours, font and sizes, the search panel's look, and a live preview."""
+        outer = QWidget(); ov = QVBoxLayout(outer)
+        self.preview = Preview(self)
+        ov.addWidget(self.preview)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        inner = QWidget(); v = QVBoxLayout(inner)
+        ch = self.changed
+
+        theme = QGroupBox("Theme"); tf = QFormLayout(theme)
+        self.preset = QComboBox(); self.preset.addItem("Choose a preset…")
+        for name in PRESETS:
+            self.preset.addItem(name)
+        self.preset.activated.connect(self.apply_preset)
+        tf.addRow("Preset:", self.preset)
+        v.addWidget(theme)
+
+        labels = QGroupBox("Labels (flags)"); lf = QFormLayout(labels)
+        self.accent = ColorField(False, ch); lf.addRow("Background:", self.accent)
+        self.label_text = ColorField(True, ch); lf.addRow("Text:", self.label_text)
+        self.label_border = ColorField(True, ch); lf.addRow("Outline:", self.label_border)
+        self.selected = ColorField(True, ch); lf.addRow("Selected highlight:", self.selected)
+        frow = QHBoxLayout()
+        self.font_default = QCheckBox("Desktop font")
+        self.font = QFontComboBox()
+        self.font_default.toggled.connect(lambda on: (self.font.setEnabled(not on), ch()))
+        self.font.currentFontChanged.connect(lambda _: ch())
+        frow.addWidget(self.font_default); frow.addWidget(self.font, 1)
+        lf.addRow("Font:", frow)
+        self.label_font_size = QSpinBox(); self.label_font_size.setRange(0, 40); self.label_font_size.setSpecialValueText("Automatic")
+        self.label_font_size.setSuffix(" pt"); self.label_font_size.valueChanged.connect(lambda _: ch())
+        lf.addRow("Text size:", self.label_font_size)
         self.scale = QDoubleSpinBox(); self.scale.setRange(0.6, 2.0); self.scale.setSingleStep(0.1); self.scale.setSuffix("×")
-        f.addRow("Label size:", self.scale)
+        self.scale.valueChanged.connect(lambda _: ch())
+        lf.addRow("Overall label size:", self.scale)
+        self.radius = QSpinBox(); self.radius.setRange(0, 12); self.radius.setSuffix(" px"); self.radius.valueChanged.connect(lambda _: ch())
+        lf.addRow("Corner radius:", self.radius)
+        self.uppercase = QCheckBox("Show labels in capitals (SA instead of sa)"); self.uppercase.toggled.connect(lambda _: ch())
+        lf.addRow("", self.uppercase)
+        v.addWidget(labels)
+
+        panel = QGroupBox("Search panel"); pf = QFormLayout(panel)
+        self.panel_theme = QComboBox(); self.panel_theme.addItem("Dark", "dark"); self.panel_theme.addItem("Light", "light")
+        self.panel_theme.currentIndexChanged.connect(lambda _: ch())
+        pf.addRow("Style:", self.panel_theme)
+        self.opacity = QSlider(Qt.Horizontal); self.opacity.setRange(50, 100); self.opacity.valueChanged.connect(lambda _: ch())
+        pf.addRow("Opacity:", self.opacity)
+        self.panel_width = QSpinBox(); self.panel_width.setRange(420, 1200); self.panel_width.setSingleStep(20); self.panel_width.setSuffix(" px")
+        self.panel_width.valueChanged.connect(lambda _: ch())
+        pf.addRow("Width:", self.panel_width)
+        self.rows = QSpinBox(); self.rows.setRange(3, 15); self.rows.valueChanged.connect(lambda _: ch())
+        pf.addRow("Result rows:", self.rows)
+        self.panel_font_size = QSpinBox(); self.panel_font_size.setRange(0, 40); self.panel_font_size.setSpecialValueText("Automatic")
+        self.panel_font_size.setSuffix(" pt"); self.panel_font_size.valueChanged.connect(lambda _: ch())
+        pf.addRow("Text size:", self.panel_font_size)
         self.panel = QComboBox()
-        for label, v in [("Automatic (where it hides the fewest labels)", "auto"), ("Top of the window", "top"),
-                         ("Centre of the window", "center"), ("Bottom of the window", "bottom")]:
-            self.panel.addItem(label, v)
-        f.addRow("Search panel position:", self.panel)
-        return w
+        for label, val in [("Automatic (where it hides the fewest labels)", "auto"), ("Top of the window", "top"),
+                           ("Centre of the window", "center"), ("Bottom of the window", "bottom")]:
+            self.panel.addItem(label, val)
+        pf.addRow("Position:", self.panel)
+        self.hint_line = QCheckBox("Show the key hints under the search field")
+        pf.addRow("", self.hint_line)
+        self.hide_panel = QCheckBox("Hide the panel until I type (labels only at first, like Shortcat's option)")
+        pf.addRow("", self.hide_panel)
+        self.dim = QSlider(Qt.Horizontal); self.dim.setRange(0, 60)
+        pf.addRow("Darken the screen behind:", self.dim)
+        v.addWidget(panel)
+        v.addStretch()
+        scroll.setWidget(inner)
+        ov.addWidget(scroll, 1)
+        return outer
 
     def labels_tab(self):
-        """When labels appear, Vimium-style auto-click, continuous mode."""
+        """When labels appear, Vimium-style auto-click, continuous mode, and scrolling keys."""
         w = QWidget(); f = QFormLayout(w)
         self.delay = QComboBox()
         for label, v in DELAYS:
@@ -114,6 +265,16 @@ class SettingsWindow(QWidget):
         f.addRow("", QLabel("<small>Continuous mode stops when you press Esc, after typing into a text field, or when "
                             "a menu or another window takes over. Shortcat recommends “Show labels: After input” with "
                             "it.</small>", textFormat=Qt.RichText, wordWrap=True))
+        self.scroll_keys = QComboBox()
+        self.scroll_keys.addItem("H J K L (Vim: left, down, up, right)", "hjkl")
+        self.scroll_keys.addItem("I J K L (arrow layout: up, left, down, right)", "ijkl")
+        f.addRow("Scroll keys (hold Space):", self.scroll_keys)
+        self.scroll_step = QSpinBox(); self.scroll_step.setRange(1, 20); self.scroll_step.setSuffix(" wheel clicks per key")
+        f.addRow("Scroll distance:", self.scroll_step)
+        f.addRow("", QLabel("<small>While the overlay is open, hold Space and press the keys to scroll the selected "
+                            "element (or the window); Shift scrolls 4× further; release Space to get fresh labels. "
+                            "Scrolling uses the pointer permission (Accessibility &amp; setup tab).</small>",
+                            textFormat=Qt.RichText, wordWrap=True))
         return w
 
     def apps_tab(self):
@@ -147,7 +308,7 @@ class SettingsWindow(QWidget):
         r.addWidget(b1); r.addWidget(b2); r.addWidget(b3)
         bl.addLayout(r)
         v.addWidget(box)
-        box2 = QGroupBox("Pointer (for controls apps can't activate, right click, hover)"); pl = QVBoxLayout(box2)
+        box2 = QGroupBox("Pointer (scrolling, right click, hover, controls apps can't activate)"); pl = QVBoxLayout(box2)
         pl.addWidget(QLabel("Uses the desktop's Remote Control permission. Your desktop asks once; revoke it any time "
                             "in System Settings → Security & Privacy → Remote Control.", wordWrap=True))
         b4 = QPushButton("Allow pointer control…"); b4.clicked.connect(lambda: self.show_cmd([core_binary(), "pointer-setup"]))
@@ -158,16 +319,19 @@ class SettingsWindow(QWidget):
         return w
 
     # --- helpers --------------------------------------------------------------------
-    def update_swatch(self, text):
-        """Show the typed colour next to the field."""
-        c = QColor(text)
-        self.swatch.setStyleSheet(f"background: {c.name() if c.isValid() else 'transparent'}; border: 1px solid #888;")
-
-    def pick_colour(self):
-        """Pick the label colour with the colour dialog."""
-        c = QColorDialog.getColor(QColor(self.accent.text()), self, "Label colour")
-        if c.isValid():
-            self.accent.setText(c.name())
+    def apply_preset(self, index):
+        """Fill the colour controls (and panel style) from a theme preset."""
+        if index <= 0:
+            return
+        name = self.preset.itemText(index)
+        pr = PRESETS[name]
+        self.loading = True
+        self.accent.set(pr["accent"]); self.label_text.set(pr["label_text"])
+        self.label_border.set(pr["label_border"]); self.selected.set(pr["selected"])
+        self.panel_theme.setCurrentIndex(max(0, self.panel_theme.findData(pr["panel_theme"])))
+        self.loading = False
+        self.preset_name = name
+        self.changed()
 
     def add_app(self):
         """Add the typed app name to the exclusion list (no duplicates)."""
@@ -192,13 +356,34 @@ class SettingsWindow(QWidget):
         except (OSError, subprocess.TimeoutExpired) as e:
             self.output.appendPlainText(str(e))
 
-    # --- load / save ------------------------------------------------------------------
+    # --- load / collect / save --------------------------------------------------------
     def load(self, cfg):
         """Fill every control from a settings dict."""
-        ui, hints, beh = cfg.get("ui", {}), cfg.get("hints", {}), cfg.get("behavior", {})
-        self.accent.setText(ui.get("accent", "#3b82f6"))
-        self.scale.setValue(float(ui.get("label_scale", 1.0)))
-        self.panel.setCurrentIndex(max(0, self.panel.findData(ui.get("panel", "auto"))))
+        self.loading = True
+        d = self.defaults
+        ui = {**d["ui"], **cfg.get("ui", {})}
+        hints, beh = {**d["hints"], **cfg.get("hints", {})}, {**d["behavior"], **cfg.get("behavior", {})}
+        scroll, search = {**d["scroll"], **cfg.get("scroll", {})}, {**d["search"], **cfg.get("search", {})}
+        self.preset_name = ui.get("theme", "")
+        self.accent.set(ui["accent"]); self.label_text.set(ui["label_text"])
+        self.label_border.set(ui["label_border"]); self.selected.set(ui["selected"])
+        self.font_default.setChecked(not ui["font"])
+        if ui["font"]:
+            self.font.setCurrentFont(ui["font"])
+        self.font.setEnabled(bool(ui["font"]))
+        self.label_font_size.setValue(int(ui["label_font_size"]))
+        self.scale.setValue(float(ui["label_scale"]))
+        self.radius.setValue(int(ui["label_radius"]))
+        self.uppercase.setChecked(bool(ui["uppercase"]))
+        self.panel_theme.setCurrentIndex(max(0, self.panel_theme.findData(ui["panel_theme"])))
+        self.opacity.setValue(int(round(float(ui["panel_opacity"]) * 100)))
+        self.panel_width.setValue(int(ui["panel_width"]))
+        self.rows.setValue(int(ui["rows"]))
+        self.panel_font_size.setValue(int(ui["panel_font_size"]))
+        self.panel.setCurrentIndex(max(0, self.panel.findData(ui["panel"])))
+        self.hint_line.setChecked(bool(ui["hint_line"]))
+        self.hide_panel.setChecked(bool(ui["hide_panel_until_typing"]))
+        self.dim.setValue(int(ui["dim"]))
         delay = -1 if hints.get("after_input") else int(hints.get("delay_ms", 0))
         i = self.delay.findData(delay)
         if i < 0:
@@ -207,25 +392,45 @@ class SettingsWindow(QWidget):
         self.auto.setChecked(bool(hints.get("auto_activate", False)))
         self.continuous.setChecked(bool(beh.get("continuous", False)))
         self.cdelay.setValue(int(beh.get("continuous_delay_ms", 500)))
-        self.windows.setChecked(bool(cfg.get("search", {}).get("windows", True)))
-        self.apps_search.setChecked(bool(cfg.get("search", {}).get("apps", True)))
+        self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
+        self.scroll_step.setValue(int(scroll.get("step", 3)))
+        self.windows.setChecked(bool(search["windows"]))
+        self.apps_search.setChecked(bool(search["apps"]))
+        self.panel_labels.setChecked(bool(search["panel"]))
         self.apps.clear()
         self.apps.addItems([str(a) for a in cfg.get("apps", {}).get("exclude", [])])
         self.login.setChecked(os.path.exists(AUTOSTART))
+        self.loading = False
+        self.changed()
 
-    def save(self):
-        """Write the controls back to config.toml (keeping keys this window doesn't know) and update autostart."""
-        if not QColor(self.accent.text()).isValid():
-            QMessageBox.warning(self, "vimvibe", f"“{self.accent.text()}” is not a colour."); return
-        cfg = self.read_config()
+    def collect(self):
+        """The settings as currently shown in the controls (the stored file merged with the controls)."""
+        cfg = json.loads(json.dumps(self.read_config()))
         delay = self.delay.currentData()
-        cfg["ui"].update(accent=self.accent.text(), label_scale=round(self.scale.value(), 2), panel=self.panel.currentData())
+        cfg["ui"].update(
+            theme=self.preset_name, accent=self.accent.value() or "#3b82f6", label_text=self.label_text.value(),
+            label_border=self.label_border.value(), selected=self.selected.value(),
+            font="" if self.font_default.isChecked() else self.font.currentFont().family(),
+            label_font_size=self.label_font_size.value(), label_scale=round(self.scale.value(), 2),
+            label_radius=self.radius.value(), uppercase=self.uppercase.isChecked(),
+            panel_theme=self.panel_theme.currentData(), panel_opacity=round(self.opacity.value() / 100, 2),
+            panel_width=self.panel_width.value(), rows=self.rows.value(), panel_font_size=self.panel_font_size.value(),
+            panel=self.panel.currentData(), hint_line=self.hint_line.isChecked(),
+            hide_panel_until_typing=self.hide_panel.isChecked(), dim=self.dim.value())
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
         cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value())
-        cfg["search"]["windows"] = self.windows.isChecked()
-        cfg["search"]["apps"] = self.apps_search.isChecked()
+        cfg["scroll"].update(keys=self.scroll_keys.currentData(), step=self.scroll_step.value())
+        cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]
-        self.write_config(cfg)
+        return cfg
+
+    def save(self):
+        """Write the controls to config.toml (keeping keys this window doesn't know) and update autostart."""
+        for field, what in ((self.accent, "Label background"), (self.label_text, "Label text"),
+                            (self.label_border, "Label outline"), (self.selected, "Selected highlight")):
+            if not field.valid():
+                QMessageBox.warning(self, "vimvibe", f"{what}: “{field.value()}” is not a colour."); return
+        self.write_config(self.collect())
         self.set_autostart(self.login.isChecked())
         self.close()
 

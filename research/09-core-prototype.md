@@ -324,3 +324,28 @@ vimvibe; opening vimvibe over Konsole's Split View submenu closed the menu.
     2 menus and labelled the submenu's entries at (724, 461..587).
 - **Panels**: plasmashell's AT-SPI windows paired with KWin dock surfaces by size (panel 911×62 at (228,706)):
   21 elements (launcher, desktops, tasks, tray icons). Labelled in every snapshot (`[search] panel`).
+
+## Update 2026-10-16 (13) — settings shortcut, theming, scrolling
+
+- **How Shortcat scrolls** (docs "Arrow Keys / Scroll", alpha; changelog 0.11.0; CONFIRMED as documentation): while
+  Shortcat is active, hold Space and tap H J K L (or I J K L, chosen in preferences) to send arrow keys to the target;
+  hold Space + Cmd + those keys to send scroll events under the pointer; tapping Ctrl moves the pointer to a result's
+  midpoint "to position for scrolling". Designed for continuous mode.
+- **vimvibe**: hold Space + H J K L (or I J K L) scrolls; Shift ×4. Daemon `ScrollStart(id)` parks the pointer over
+  the selected element (when a query is typed) or the window centre, `Scroll(dx, dy)` sends wheel clicks through the
+  RemoteDesktop portal, `ScrollEnd()` restores the pointer; on Space release the overlay calls `Refresh`. During the
+  scroll the overlay sets `WindowTransparentForInput` so the wheel events reach the app below.
+  - Measured on Dolphin (300 files, icon view): `NotifyPointerAxisDiscrete` scrolls exactly and reverses exactly
+    (30 clicks down: first visible file-160 → 140, 30 up: back to 160). `NotifyPointerAxis` (smooth) was unreliable
+    (both signs scrolled down); only discrete is used. Overlay test with real overlay code and synthetic key events
+    (Space, J×3, release; step 10): view moved 3 rows (160 → 145), query stayed empty, pointer restored to
+    (1010, 486), labels re-read (65 → 60).
+  - Arrow keys are not sent: that needs the portal's keyboard device (a new consent); planned.
+- **Settings shortcut**: third kglobalaccel action `settings` with Ctrl+Shift+Comma and Ctrl+Shift+Less (the same
+  keys with Shift on most layouts); `OpenSettings` signal; the overlay process opens one Settings window. Verified with
+  `invokeShortcut settings`: a 760×708 window appeared and was active; it closes with the daemon.
+- **Theming** (`palette/vimvibe_style.py`): presets (Blue, Shortcat, Nord, Dracula, Gruvbox, Solarized light, High
+  contrast), label background/text/outline/selected colours, font, label font size, overall size, radius, case;
+  panel style/opacity/width/rows/font size/hint line/hide-until-typing; screen dim. The Settings preview draws with
+  the same `Theme.draw_label` the overlay uses. Verified by rendering the Settings window offscreen and the overlay
+  window's own pixels with the Shortcat preset.

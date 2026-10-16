@@ -10,7 +10,10 @@
 //! until within a pixel. That is robust to pointer acceleration/scaling because every step is measured.
 
 use crate::kwin;
-use ashpd::desktop::remote_desktop::{DeviceType, KeyState, NotifyPointerButtonOptions, NotifyPointerMotionOptions, RemoteDesktop, SelectDevicesOptions, StartOptions};
+use ashpd::desktop::remote_desktop::{
+    Axis, DeviceType, KeyState, NotifyPointerAxisDiscreteOptions, NotifyPointerButtonOptions, NotifyPointerMotionOptions, RemoteDesktop, SelectDevicesOptions,
+    StartOptions,
+};
 use ashpd::desktop::{CreateSessionOptions, PersistMode, Session};
 use ashpd::enumflags2::BitFlags;
 use std::path::PathBuf;
@@ -142,6 +145,20 @@ impl Pointer {
         if let (true, Some((ox, oy))) = (restore, origin) {
             tokio::time::sleep(Duration::from_millis(40)).await; // let the click land before the pointer leaves
             let _ = self.move_to(ox, oy).await;
+        }
+        Ok(())
+    }
+
+    /// Scroll like mouse-wheel clicks wherever the pointer is: `dy` > 0 down, `dx` > 0 right. Apps scroll the widget
+    /// under the pointer, so callers park the pointer over the target first.
+    pub async fn scroll(&self, dx: i32, dy: i32) -> anyhow::Result<()> {
+        // Wheel clicks ("discrete" axis events). The portal's smooth axis events were measured unreliable here
+        // (Dolphin scrolled down for both signs), discrete ones scroll exactly and reverse exactly.
+        if dy != 0 {
+            self.rd.notify_pointer_axis_discrete(&self.session, Axis::Vertical, dy, NotifyPointerAxisDiscreteOptions::default()).await?;
+        }
+        if dx != 0 {
+            self.rd.notify_pointer_axis_discrete(&self.session, Axis::Horizontal, dx, NotifyPointerAxisDiscreteOptions::default()).await?;
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """vimvibe palette: the overlay UI for the vimvibe daemon (`vimvibe-core daemon`), plus its Settings window.
 
-The daemon owns the global shortcut and snapshots the focused window when it fires, so this process only shows the
+The daemon owns the global shortcuts and snapshots the focused window when one fires, so this process only shows the
 overlay on the `Opened` signal and forwards Search / Activate / Close over D-Bus. Anything that speaks the same D-Bus
 API can replace this file.
 
@@ -15,12 +15,13 @@ window on the target's screen holds a search panel, and every element of the tar
   tap Ctrl                 move the pointer onto it (hover)   tap Ctrl twice  give it keyboard focus
   Ctrl+1..9                act on row n                       Ctrl+Shift+1..9  select row n
   ↑ ↓ / Tab / Ctrl+N Ctrl+P  move the selection               PageUp / PageDown  by a page
+  hold Space + H J K L     scroll (the selected element, or the window); release Space to see new labels
   tap Alt                  clear the search, show all labels  Ctrl+R       re-read the window
-  Esc                      close (also ends continuous mode)
+  Ctrl+,  (anywhere: Ctrl+Shift+,)  Settings                  Esc          close (also ends continuous mode)
 Mouse: click a label or a row to activate it, click anywhere else to close, wheel moves the selection.
 
   vimvibe_palette.py                 run the overlay (keep it running; it waits for the shortcut)
-  vimvibe_palette.py --settings      open the Settings window
+  vimvibe_palette.py --settings      open the Settings window on its own
   testing: [--accent COLOR] [--trigger] [--query TEXT] [--quit-after N] [--snapshot FILE]
 
 All settings live in ~/.config/vimvibe/config.toml (see README.md); --accent and $VIMVIBE_ACCENT override the colour.
@@ -29,75 +30,23 @@ import argparse, json, os, sys
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusServiceWatcher
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
+
+from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, Theme, read_config, write_config
 
 SERVICE, PATH, IFACE = "org.vimvibe.Daemon", "/org/vimvibe/Daemon", "org.vimvibe.Daemon"
 DEBUG = bool(os.environ.get("VIMVIBE_DEBUG"))
-DEFAULT_ACCENT = "#3b82f6"
-CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "vimvibe", "config.toml")
-
-ROWS = 9            # rows shown at once; also the Ctrl+1..9 range
-ROW_H = 34
-PANEL_W = 640
 PAD = 14
 TAP_MS = 350        # a modifier released within this time, with no other key, counts as a tap
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
                    "Menu", "MenuBar", "PushButtonMenu"}
-
-DEFAULTS = {
-    "ui": {"accent": DEFAULT_ACCENT, "panel": "auto", "label_scale": 1.0},
-    "hints": {"delay_ms": 0, "after_input": False, "auto_activate": False},
-    "behavior": {"continuous": False, "continuous_delay_ms": 500},
-    "search": {"windows": True, "apps": True},
-    "apps": {"exclude": []},
+# hold-Space scroll keys -> (dx, dy) in wheel clicks; Shortcat offers both layouts
+SCROLL_KEYS = {
+    "hjkl": {Qt.Key_H: (-1, 0), Qt.Key_J: (0, 1), Qt.Key_K: (0, -1), Qt.Key_L: (1, 0)},
+    "ijkl": {Qt.Key_J: (-1, 0), Qt.Key_K: (0, 1), Qt.Key_I: (0, -1), Qt.Key_L: (1, 0)},
 }
-
-
-def read_config():
-    """The config file merged over DEFAULTS (unknown keys are kept, so the daemon's settings survive a save)."""
-    cfg = json.loads(json.dumps(DEFAULTS))
-    try:
-        import tomllib
-        with open(CONFIG, "rb") as f:
-            for section, values in tomllib.load(f).items():
-                if isinstance(values, dict):
-                    cfg.setdefault(section, {}).update(values)
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError) as e:
-        print(f"ignoring {CONFIG}: {e}", file=sys.stderr)
-    return cfg
-
-
-def write_config(cfg):
-    """Write the config as TOML (only strings, numbers, booleans and string lists are used)."""
-    def val(v):
-        """TOML literal for one value."""
-        if isinstance(v, bool):
-            return "true" if v else "false"
-        if isinstance(v, (int, float)):
-            return repr(v)
-        if isinstance(v, list):
-            return "[" + ", ".join(val(x) for x in v) + "]"
-        return json.dumps(str(v), ensure_ascii=False)  # a JSON string is a valid TOML basic string
-    lines = ["# vimvibe settings — written by `vimvibe_palette.py --settings`; safe to edit by hand.", ""]
-    for section, values in cfg.items():
-        lines.append(f"[{section}]")
-        lines += [f"{k} = {val(v)}" for k, v in values.items()]
-        lines.append("")
-    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
-    tmp = CONFIG + ".tmp"
-    with open(tmp, "w") as f:
-        f.write("\n".join(lines))
-    os.replace(tmp, CONFIG)
-
-
-def readable_on(c):
-    """Black or white, whichever reads better on colour c."""
-    lum = 0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF()
-    return QColor("#0b0d12") if lum > 0.6 else QColor("#ffffff")
 
 
 def hint_prefix(text):
@@ -157,6 +106,7 @@ class Overlay(QWidget):
         self.passive = passive
         self.daemon = daemon
         self.accent_override = accent_override
+        self.on_settings = None  # set by the Router: open the Settings window
         self.hits = []
         self.elements = []    # every element: {id, hint, name, role, enabled, screen}
         self.labels = {}      # id -> label rect (window coords)
@@ -169,12 +119,12 @@ class Overlay(QWidget):
         self.panel = QRectF()
         self.tap = {}         # modifier key -> press time (ms), cleared when another key comes in between
         self.ctrl_taps = 0
+        self.space_down = False   # Space is held: H J K L scroll instead of typing
+        self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
+        self.scrolling = False
         self.edit = QLineEdit(self)
-        self.edit.setPlaceholderText("Search for elements, or type a label")
-        self.default_placeholder = self.edit.placeholderText()
+        self.default_placeholder = "Search for elements, or type a label"
         self.edit.setFrame(False)
-        self.edit.setStyleSheet("background: transparent; color: #eceef3;")
-        f = self.edit.font(); f.setPointSizeF(f.pointSizeF() * 1.35); self.edit.setFont(f)
         self.edit.textChanged.connect(self.query)
         self.edit.installEventFilter(self)
         self.show_labels_timer = QTimer(self, singleShot=True, timeout=self.reveal_labels)
@@ -188,21 +138,15 @@ class Overlay(QWidget):
             self.passive = make_passive(self)
 
     def load_settings(self):
-        """Re-read config.toml: accent colour (and the text colour that reads on it) and the fonts."""
+        """Re-read config.toml and rebuild the theme (colours, fonts, sizes) and the search field's look."""
         self.cfg = read_config()
-        ui = self.cfg["ui"]
-        c = QColor(self.accent_override or os.environ.get("VIMVIBE_ACCENT") or ui.get("accent") or DEFAULT_ACCENT)
-        if not c.isValid():
-            print(f"unknown colour, using {DEFAULT_ACCENT}", file=sys.stderr)
-            c = QColor(DEFAULT_ACCENT)
-        self.accent, self.on_accent = c, readable_on(c)
-        base = QApplication.font().pointSizeF()
-        scale = max(0.6, min(2.0, float(ui.get("label_scale", 1.0))))
-        self.row_font = QFont(QApplication.font()); self.row_font.setPointSizeF(base * 1.1)
-        self.small_font = QFont(QApplication.font()); self.small_font.setPointSizeF(base * 0.9)
-        self.key_font = QFont(QApplication.font()); self.key_font.setBold(True)
-        self.label_font = QFont(QApplication.font()); self.label_font.setBold(True); self.label_font.setPointSizeF(base * 0.95 * scale)
-        self.label_fm = QFontMetricsF(self.label_font)
+        self.t = Theme(self.cfg, self.accent_override)
+        self.edit.setFont(self.t.field_font)
+        self.edit.setStyleSheet(f"background: transparent; color: {self.t.panel_text.name()};")
+
+    def send(self, method, *args):
+        """Fire-and-forget D-Bus call to the daemon (PySide's asyncCall takes no arguments, hence the list form)."""
+        self.daemon.asyncCallWithArgumentList(method, list(args))
 
     def call(self, method, *args):
         """Blocking D-Bus call to the daemon; returns its JSON answer (None on error)."""
@@ -224,7 +168,7 @@ class Overlay(QWidget):
         self.layout_labels()
         self.edit.blockSignals(True); self.edit.clear(); self.edit.blockSignals(False)
         self.labels_on = False
-        self.edit.setPlaceholderText("Search applications and windows" if self.meta.get("launcher") else self.default_placeholder)
+        self.set_placeholder()
         self.query("")
         self.place_panel()
         if self.passive:
@@ -246,6 +190,7 @@ class Overlay(QWidget):
     def closed(self):
         """Daemon signal: the snapshot was dropped; hide."""
         self.show_labels_timer.stop()
+        self.end_scroll(refresh=False)
         self.hide()
 
     @Slot(str)
@@ -272,9 +217,9 @@ class Overlay(QWidget):
         elif name in ("Up", "ISO_Left_Tab", "KP_Up"):
             self.move_sel(-1)
         elif name in ("Page_Down", "Next"):
-            self.move_sel(ROWS)
+            self.move_sel(self.t.rows)
         elif name in ("Page_Up", "Prior"):
-            self.move_sel(-ROWS)
+            self.move_sel(-self.t.rows)
         elif name == "space":
             self.edit.insert(" ")
         elif k.get("text") and len(name) == 1:
@@ -289,11 +234,18 @@ class Overlay(QWidget):
         self.labels_on = True
         self.update()
 
+    def set_placeholder(self):
+        """Search field placeholder; empty while the panel is hidden until typing (nothing should float on screen)."""
+        if self.t.hide_panel_until_typing:
+            self.edit.setPlaceholderText("")
+        else:
+            self.edit.setPlaceholderText("Search applications and windows" if self.meta.get("launcher") else self.default_placeholder)
+
     # --- layout -------------------------------------------------------------------
     def place_screen(self):
         """Cover the screen that holds the target window."""
         o = self.meta.get("origin")  # [x, y, w, h] of the target window, logical screen px
-        scr = QGuiApplication.screenAt(QPointF(o[0] + o[2] / 2, o[1] + o[3] / 2).toPoint()) if o else None
+        scr = QGuiApplication.screenAt(QPointF(o[0] + o[2] / 2, o[1] + o[3] / 2).toPoint()) if o and o[2] > 0 else None
         scr = scr or QGuiApplication.primaryScreen()
         if self.windowHandle() is None:
             self.create()
@@ -312,10 +264,9 @@ class Overlay(QWidget):
     def layout_labels(self):
         """Label rect per element: at the element's right edge, vertically centred (Shortcat's placement); a label
         wider than its element is centred on it. When two labels would land on the same spot the later one moves
-        left inside its element if there is room, otherwise they overlap like Shortcat's do."""
+        left inside its element if there is room, then just below or above it; otherwise they overlap like Shortcat's."""
         self.rects, self.labels = {}, {}
         W, H = self.width(), self.height()
-        h = self.label_fm.height() + 4
         placed = []
         for e in self.elements:
             r = self.local_rect(e.get("screen"))
@@ -324,14 +275,13 @@ class Overlay(QWidget):
             self.rects[e["id"]] = r
             if not e.get("hint"):
                 continue
-            w = self.label_fm.horizontalAdvance(e["hint"]) + 10
+            w, h = self.t.label_size(e["hint"])
             x = r.right() - w - 1 if r.width() >= w + 2 else r.center().x() - w / 2
             y = r.center().y() - h / 2
             clamp = lambda x, y: QRectF(min(max(x, 1), W - w - 1), min(max(y, 1), H - h - 1), w, h)
             lr = clamp(x, y)
             clear = lambda q: not any(o.intersects(q) for o in placed)
             if not clear(lr):
-                # crowded (small buttons side by side): slide left inside the element, else just below it, else above
                 cands = []
                 q = QRectF(lr)
                 for _ in range(3):
@@ -345,28 +295,37 @@ class Overlay(QWidget):
             placed.append(lr)
             self.labels[e["id"]] = lr
 
+    def header_h(self):
+        """Height of the panel above the rows: search field, plus the hint line when shown."""
+        return PAD + 44 + (22 if self.t.hint_line else 8)
+
     def panel_height(self, rows):
         """Height of the search panel for `rows` result rows."""
-        return PAD + 44 + 22 + max(1, rows) * ROW_H + 30 + PAD
+        return self.header_h() + max(1, rows) * self.t.row_h + 30 + PAD
+
+    def panel_shown(self):
+        """Whether the panel is drawn now (hidden until typing, when that is set)."""
+        return not (self.t.hide_panel_until_typing and not self.edit.text())
 
     def place_panel(self, keep_if_clear=False):
-        """Put the panel where it hides the fewest labels: above, at the top, middle or bottom of, or below the target
-        window, centred on it ([ui] panel = "top"/"center"/"bottom" pins it). The selected element must stay visible;
-        with keep_if_clear the panel only moves when it would hide it, so it does not jump around while typing."""
+        """Put the panel where it hides the fewest labels: above, at the top, middle or bottom of, beside, or below the
+        target window ([ui] panel = "top"/"center"/"bottom" pins it). The selected element must stay visible; with
+        keep_if_clear the panel only moves when it would hide it, so it does not jump around while typing."""
         W, H = self.width(), self.height()
         o = self.meta.get("origin")
-        if o:
+        if o and o[2] > 0:
             wx, wy, ww, wh = o[0] - self.origin[0], o[1] - self.origin[1], o[2], o[3]
         else:
             wx, wy, ww, wh = 0, 0, W, H
-        w = min(PANEL_W, W - 2 * PAD)
-        h = self.panel_height(min(ROWS, max(1, len(self.hits))))
+        rows = self.t.rows
+        w = min(self.t.panel_width, W - 2 * PAD)
+        h = self.panel_height(min(rows, max(1, len(self.hits))))
         x = max(PAD, min(wx + ww / 2 - w / 2, W - w - PAD))
-        pinned = {"top": wy + PAD, "center": wy + wh * 0.5 - h / 2, "bottom": wy + wh - h - PAD}.get(self.cfg["ui"].get("panel"))
+        pinned = {"top": wy + PAD, "center": wy + wh * 0.5 - h / 2, "bottom": wy + wh - h - PAD}.get(self.t.position)
         if pinned is not None:
             if keep_if_clear and not self.panel.isEmpty():
                 return
-            y = max(PAD, min(pinned, H - self.panel_height(ROWS) - PAD))
+            y = max(PAD, min(pinned, H - self.panel_height(rows) - PAD))
         else:
             sel_rect = self.rects.get(self.hits[self.sel]["id"]) if self.hits else None
             labels = list(self.labels.values())
@@ -382,7 +341,7 @@ class Overlay(QWidget):
             cands = [(x, max(PAD, min(y, H - h - PAD)), w) for y in ys]
             # beside the target (narrow popups like the start menu leave room left or right)
             for side_x, side_w in ((wx + ww + PAD, W - (wx + ww) - 2 * PAD), (PAD, wx - 2 * PAD)):
-                sw = min(PANEL_W, side_w)
+                sw = min(self.t.panel_width, side_w)
                 if sw >= 400:
                     for y in (wy, wy + wh * 0.5 - h / 2):
                         cands.append((side_x, max(PAD, min(y, H - h - PAD)), sw))
@@ -414,8 +373,8 @@ class Overlay(QWidget):
         self.sel = absolute if absolute is not None else (self.sel + step) % len(self.hits)
         if self.sel < self.top:
             self.top = self.sel
-        elif self.sel >= self.top + ROWS:
-            self.top = self.sel - ROWS + 1
+        elif self.sel >= self.top + self.t.rows:
+            self.top = self.sel - self.t.rows + 1
         self.place_panel(keep_if_clear=True)
         self.update()
 
@@ -445,6 +404,7 @@ class Overlay(QWidget):
     def dismiss(self):
         """Close without acting (Esc, click outside)."""
         self.show_labels_timer.stop()
+        self.end_scroll(refresh=False)
         self.hide()
         self.daemon.call("Close")
 
@@ -458,8 +418,47 @@ class Overlay(QWidget):
         taps, self.ctrl_taps = self.ctrl_taps, 0
         self.act("focus" if taps >= 2 else "hover")
 
+    # --- scrolling (hold Space + H J K L) --------------------------------------------
+    def start_scroll(self):
+        """Begin scrolling: the daemon parks the pointer over the selected element (when something is typed) or the
+        middle of the window, and this window stops taking pointer input so the wheel events reach the app below."""
+        target = self.hits[self.sel]["id"] if (self.hits and self.edit.text()) else -1
+        res = self.call("ScrollStart", target)
+        if not res or not res.get("ok"):
+            notify("vimvibe can't scroll here", (res or {}).get("error", "the daemon did not answer"))
+            return False
+        self.scrolling = True
+        self.labels_on = False  # positions go stale as the content moves; new labels come after Space is released
+        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.update()
+        return True
+
+    def end_scroll(self, refresh=True):
+        """Finish scrolling: pointer back where it was, input back to this window, and re-read the window so labels
+        match the scrolled content."""
+        if not self.scrolling:
+            return
+        self.scrolling = False
+        self.daemon.asyncCall("ScrollEnd")
+        if self.windowHandle():
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+        if refresh:
+            self.daemon.asyncCall("Refresh")
+
+    def scroll_key(self, k, shift):
+        """A scroll key while Space is held; Shift scrolls four times as far."""
+        dx, dy = SCROLL_KEYS.get(self.cfg["scroll"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k, (0, 0))
+        if not (dx or dy):
+            return False
+        if not self.scrolling and not self.start_scroll():
+            return True
+        step = max(1, int(self.cfg["scroll"].get("step", 3))) * (4 if shift else 1)
+        self.send("Scroll", dx * step, dy * step)
+        return True
+
     def eventFilter(self, obj, ev):
-        """Keys typed into the search field: Esc, Enter variants, Ctrl+digit, navigation, and modifier taps."""
+        """Keys typed into the search field: Esc, Enter variants, Ctrl+digit, navigation, Space-scrolling, Settings,
+        and modifier taps."""
         if obj is not self.edit:
             return super().eventFilter(obj, ev)
         t = ev.type()
@@ -471,8 +470,21 @@ class Overlay(QWidget):
                     self.tap = {k: ev.timestamp()}
                 return False
             self.tap = {}  # another key: the modifier was used as a modifier, not tapped
+            if k == Qt.Key_Space and not ctrl and not alt:
+                if not ev.isAutoRepeat():
+                    self.space_down, self.space_used = True, False
+                return True  # typed on release, unless it was used to scroll
+            if self.space_down and not ctrl and not alt:
+                if self.scroll_key(k, shift):
+                    self.space_used = True
+                    return True
             if k == Qt.Key_Escape:
                 self.dismiss(); return True
+            if ctrl and k in (Qt.Key_Comma, Qt.Key_Less):
+                self.dismiss()
+                if self.on_settings:
+                    self.on_settings()
+                return True
             if k in (Qt.Key_Return, Qt.Key_Enter):
                 self.act("right" if ctrl else "double" if alt else "middle" if shift else "click"); return True
             digit = {Qt.Key_1 + i: i for i in range(9)}
@@ -489,11 +501,19 @@ class Overlay(QWidget):
             if ctrl and k == Qt.Key_R:
                 self.daemon.asyncCall("Refresh"); return True
             step = {Qt.Key_Down: 1, Qt.Key_Tab: 1, Qt.Key_Up: -1, Qt.Key_Backtab: -1,
-                    Qt.Key_PageDown: ROWS, Qt.Key_PageUp: -ROWS}.get(k)
+                    Qt.Key_PageDown: self.t.rows, Qt.Key_PageUp: -self.t.rows}.get(k)
             if ctrl and k == Qt.Key_N: step = 1
             if ctrl and k == Qt.Key_P: step = -1
             if step:
                 self.move_sel(step); return True
+        elif t == QEvent.KeyRelease and ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
+            if self.space_down:
+                self.space_down = False
+                if self.space_used:
+                    self.end_scroll()
+                else:
+                    self.edit.insert(" ")
+            return True
         elif t == QEvent.KeyRelease and ev.key() in (Qt.Key_Control, Qt.Key_Alt) and not ev.isAutoRepeat():
             k = ev.key()
             pressed = self.tap.pop(k, None)
@@ -508,17 +528,19 @@ class Overlay(QWidget):
     # --- mouse -------------------------------------------------------------------
     def row_rect(self, i):
         """Rectangle of visible result row `i` inside the panel."""
-        return QRectF(self.panel.x() + PAD, self.panel.y() + PAD + 44 + 22 + i * ROW_H, self.panel.width() - 2 * PAD, ROW_H)
+        return QRectF(self.panel.x() + PAD, self.panel.y() + self.header_h() + i * self.t.row_h,
+                      self.panel.width() - 2 * PAD, self.t.row_h)
 
     def mousePressEvent(self, ev):
         """Click on a row or a label activates it (right button: right click); anywhere else closes."""
         p = ev.position()
         right = ev.button() == Qt.RightButton
-        for i in range(min(ROWS, len(self.hits) - self.top)):
-            if self.row_rect(i).contains(p):
-                self.act("right" if right else "click", row=self.top + i); return
-        if self.panel.contains(p):  # inside the panel's area: never dismiss on a stray click
-            return
+        if self.panel_shown():
+            for i in range(min(self.t.rows, len(self.hits) - self.top)):
+                if self.row_rect(i).contains(p):
+                    self.act("right" if right else "click", row=self.top + i); return
+            if self.panel.contains(p):  # inside the panel's area: never dismiss on a stray click
+                return
         for eid in self.shown_labels():  # a visible label
             if self.labels[eid].contains(p):
                 self.act("right" if right else "click", eid=eid); return
@@ -537,18 +559,36 @@ class Overlay(QWidget):
         q = hint_prefix(self.edit.text())
         if q is None:
             return []
-        hint = {e["id"]: e["hint"] for e in self.elements}
+        hint = {e["id"]: e["hint"].upper() for e in self.elements}
         return [i for i in self.labels if hint.get(i, "").startswith(q)]
 
     def paintEvent(self, _):
-        """Draw the selected element's highlight, the labels, then the panel on top."""
+        """Draw the dimmed backdrop, the selected element's highlight, the labels, then the panel on top."""
         if self.origin is None:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if self.t.dim and not self.scrolling:
+            p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * self.t.dim / 100)))
+        if self.scrolling:
+            self.paint_scroll_banner(p)
+            return
         self.paint_selected(p)
         self.paint_labels(p)
-        self.paint_panel(p)
+        if self.panel_shown():
+            self.paint_panel(p)
+
+    def paint_scroll_banner(self, p):
+        """While scrolling: a small banner instead of labels and panel (they would be stale)."""
+        keys = self.cfg["scroll"].get("keys", "hjkl").upper()
+        text = f"Scrolling — hold Space, {' '.join(keys)} (Shift: faster) · release Space for new labels"
+        p.setFont(self.t.small_font)
+        w = QFontMetricsF(self.t.small_font).horizontalAdvance(text) + 32
+        r = QRectF((self.width() - w) / 2, 24, w, 34)
+        path = QPainterPath(); path.addRoundedRect(r, 10, 10)
+        p.fillPath(path, self.t.panel_bg)
+        p.setPen(QPen(self.t.accent, 2)); p.drawPath(path)
+        p.setPen(self.t.panel_text); p.drawText(r, Qt.AlignCenter, text)
 
     def paint_selected(self, p):
         """Filled highlight around the selected result's element."""
@@ -556,82 +596,72 @@ class Overlay(QWidget):
             return
         r = self.rects.get(self.hits[self.sel]["id"])
         if r:
-            fill = QColor(self.accent); fill.setAlpha(80)
-            p.setPen(QPen(self.accent, 2)); p.setBrush(fill)
+            fill = QColor(self.t.selected); fill.setAlpha(80)
+            p.setPen(QPen(self.t.selected, 2)); p.setBrush(fill)
             p.drawRoundedRect(r.adjusted(-2, -2, 2, 2), 4, 4)
             p.setBrush(Qt.NoBrush)
 
     def paint_labels(self, p):
-        """Draw the labels that are visible now; the part already typed is dimmed, the selected one outlined."""
+        """Draw the labels that are visible now; the part already typed is dimmed, the selected one highlighted."""
         typed = len(hint_prefix(self.edit.text()) or "")
         sel_id = self.hits[self.sel]["id"] if self.hits else None
         ids = self.shown_labels()
         if sel_id is not None and sel_id in self.labels and sel_id not in ids and self.labels_on:
             ids.append(sel_id)
         hint = {e["id"]: e["hint"] for e in self.elements}
-        p.setFont(self.label_font)
-        border = QColor(0, 0, 0, 110)
-        dim = QColor(self.on_accent); dim.setAlpha(110)
         for eid in ids:
-            lr = self.labels[eid]
-            selected = eid == sel_id
-            path = QPainterPath(); path.addRoundedRect(lr, 3, 3)
-            p.fillPath(path, QColor(self.accent).lighter(125) if selected else self.accent)
-            p.setPen(QPen(QColor(255, 255, 255) if selected else border, 1.5 if selected else 1)); p.drawPath(path)
-            # the part already typed is dimmed, like Vimium
-            x = lr.x() + 5
-            for j, ch in enumerate(hint.get(eid, "")):
-                p.setPen(dim if j < typed and not selected else self.on_accent)
-                cw = self.label_fm.horizontalAdvance(ch)
-                p.drawText(QRectF(x, lr.y(), cw + 1, lr.height()), Qt.AlignVCenter | Qt.AlignLeft, ch)
-                x += cw
+            self.t.draw_label(p, self.labels[eid], hint.get(eid, ""), typed, eid == sel_id)
 
     def paint_panel(self, p):
         """Draw the search panel: field frame, hint line, result rows (name, role, label, Ctrl+n) and footer."""
-        pr = QRectF(self.panel); pr.setHeight(self.panel_height(min(ROWS, len(self.hits))))
+        t = self.t
+        pr = QRectF(self.panel); pr.setHeight(self.panel_height(min(t.rows, len(self.hits))))
         p.setBrush(Qt.NoBrush)
         path = QPainterPath(); path.addRoundedRect(pr, 14, 14)
-        p.fillPath(path, QColor(22, 24, 30, 245))
-        p.setPen(QPen(QColor(255, 255, 255, 30), 1)); p.drawPath(path)
+        p.fillPath(path, t.panel_bg)
+        p.setPen(QPen(t.panel_border, 1)); p.drawPath(path)
         fr = QRectF(pr.x() + PAD, pr.y() + PAD, pr.width() - 2 * PAD, 44)
         fp = QPainterPath(); fp.addRoundedRect(fr, 9, 9)
-        p.fillPath(fp, QColor(12, 13, 17))
-        p.setPen(QPen(self.accent, 2)); p.drawPath(fp)
-        p.setFont(self.small_font); p.setPen(QColor(170, 176, 190))
-        p.drawText(QRectF(pr.x() + PAD + 4, pr.y() + PAD + 44, pr.width() - 2 * PAD, 22), Qt.AlignVCenter,
-                   "[Enter] click · [Ctrl+Enter] right click · tap [Alt] all labels · tap [Ctrl] hover")
-        fm = QFontMetricsF(self.row_font)
-        sfm = QFontMetricsF(self.small_font)
-        for i in range(min(ROWS, len(self.hits) - self.top)):
+        p.fillPath(fp, t.panel_field)
+        p.setPen(QPen(t.accent, 2)); p.drawPath(fp)
+        if t.hint_line:
+            p.setFont(t.small_font); p.setPen(t.panel_dim)
+            keys = self.cfg["scroll"].get("keys", "hjkl").upper()
+            p.drawText(QRectF(pr.x() + PAD + 4, pr.y() + PAD + 44, pr.width() - 2 * PAD, 22), Qt.AlignVCenter,
+                       f"[Enter] click · [Ctrl+Enter] right · tap [Alt] all labels · [Space+{keys}] scroll · [Ctrl+,] settings")
+        fm = QFontMetricsF(t.row_font)
+        sfm = QFontMetricsF(t.small_font)
+        for i in range(min(t.rows, len(self.hits) - self.top)):
             idx = self.top + i
             h = self.hits[idx]; e = h["element"]
             rr = self.row_rect(i)
             if idx == self.sel:
                 sp = QPainterPath(); sp.addRoundedRect(rr.adjusted(0, 1, 0, -1), 7, 7)
-                c = QColor(self.accent); c.setAlpha(75); p.fillPath(sp, c)
-            nr = QRectF(rr.right() - 28, rr.y() + 6, 24, ROW_H - 12)
-            cr = QRectF(nr.x() - 28, nr.y(), 24, nr.height())
-            for kr, txt in ((cr, "⌃"), (nr, str(i + 1))):
+                c = QColor(t.selected); c.setAlpha(75); p.fillPath(sp, c)
+            kh = rr.height() - 12
+            nr = QRectF(rr.right() - 28, rr.y() + 6, 24, kh)
+            cr = QRectF(nr.x() - 28, nr.y(), 24, kh)
+            for kr, txt in ((cr, "⌃"), (nr, str(i + 1) if i < 9 else "")):
+                if not txt:
+                    continue
                 kp = QPainterPath(); kp.addRoundedRect(kr, 5, 5)
-                p.fillPath(kp, QColor(48, 52, 62))
-                p.setFont(self.key_font); p.setPen(QColor(225, 228, 235))
+                p.fillPath(kp, t.key_bg)
+                p.setFont(t.key_font); p.setPen(t.key_fg)
                 p.drawText(kr, Qt.AlignCenter, txt)
             right = cr.x() - 10
             if h.get("hint"):
-                lw = self.label_fm.horizontalAdvance(h["hint"]) + 10
-                lr = QRectF(right - lw, rr.center().y() - (self.label_fm.height() + 4) / 2, lw, self.label_fm.height() + 4)
-                lp = QPainterPath(); lp.addRoundedRect(lr, 3, 3)
-                p.fillPath(lp, self.accent)
-                p.setFont(self.label_font); p.setPen(self.on_accent); p.drawText(lr, Qt.AlignCenter, h["hint"])
+                lw, lh = t.label_size(h["hint"])
+                lr = QRectF(right - lw, rr.center().y() - lh / 2, lw, lh)
+                t.draw_label(p, lr, h["hint"])
                 right = lr.x() - 10
             role = e["role"] + ("" if e["enabled"] else " · disabled")
             rw = sfm.horizontalAdvance(role)
-            p.setFont(self.small_font); p.setPen(QColor(140, 146, 160))
-            p.drawText(QRectF(right - rw, rr.y(), rw + 2, ROW_H), Qt.AlignVCenter, role)
-            p.setFont(self.row_font)
-            p.setPen(QColor(235, 238, 245) if e["enabled"] else QColor(120, 125, 138))
+            p.setFont(t.small_font); p.setPen(t.panel_role)
+            p.drawText(QRectF(right - rw, rr.y(), rw + 2, rr.height()), Qt.AlignVCenter, role)
+            p.setFont(t.row_font)
+            p.setPen(t.panel_text if e["enabled"] else t.panel_disabled)
             avail = right - rw - 16 - (rr.x() + 10)
-            p.drawText(QRectF(rr.x() + 10, rr.y(), avail, ROW_H), Qt.AlignVCenter,
+            p.drawText(QRectF(rr.x() + 10, rr.y(), avail, rr.height()), Qt.AlignVCenter,
                        fm.elidedText(e["name"] or "(unlabeled)", Qt.ElideRight, avail))
         n = self.meta.get("count", 0)
         ms = (self.meta.get("ms") or {}).get("total")
@@ -639,7 +669,7 @@ class Overlay(QWidget):
         trunc = " (truncated)" if self.meta.get("truncated") else ""
         wins = f" + {self.meta['windows']} windows" if self.meta.get("windows") else ""
         cont = " · continuous" if self.cfg["behavior"].get("continuous") else ""
-        p.setFont(self.small_font); p.setPen(QColor(170, 176, 190))
+        p.setFont(t.small_font); p.setPen(t.panel_dim)
         if self.meta.get("launcher"):
             foot = f"{self.meta.get('apps', 0)} applications · {self.meta.get('windows', 0)} windows — type to launch or switch"
         else:
@@ -649,19 +679,22 @@ class Overlay(QWidget):
 
 class Router(QObject):
     """Sends each open to the right overlay: the normal one (takes the keyboard) or the passive one (layer-shell, for
-    popups that must keep the keyboard). The passive one is created on first use."""
+    popups that must keep the keyboard). The passive one is created on first use. Also owns the Settings window."""
     def __init__(self, daemon, accent):
         """Create the normal overlay now; the passive one when first needed."""
         super().__init__()
         self.daemon, self.accent = daemon, accent
         self.normal = Overlay(daemon, accent)
+        self.normal.on_settings = self.open_settings
         self._passive = None
         self.current = self.normal
+        self.settings = None
 
     def passive(self):
         """The passive overlay, created the first time a popup needs it."""
         if self._passive is None:
             self._passive = Overlay(self.daemon, self.accent, passive=True)
+            self._passive.on_settings = self.open_settings
         return self._passive
 
     @Slot(str)
@@ -695,6 +728,28 @@ class Router(QObject):
         if self._passive is not None and self._passive.isVisible():
             self._passive.on_key(payload)
 
+    @Slot()
+    def open_settings(self):
+        """Show the Settings window (Ctrl+Shift+, anywhere, or Ctrl+, in the overlay); one window, raised if open."""
+        from vimvibe_settings import SettingsWindow
+        for o in (self.normal, self._passive):
+            if o is not None and o.isVisible():
+                o.hide()
+        if self.settings is None:
+            self.settings = SettingsWindow(read_config, write_config, DEFAULTS)
+        else:
+            self.settings.load(read_config())
+        self.settings.show()
+        self.settings.raise_()
+        self.settings.activateWindow()
+
+
+def desktop_entry_installed():
+    """Whether a vimvibe.desktop entry is in an XDG applications directory (installed by install.sh)."""
+    dirs = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")]
+    dirs += (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
+    return any(os.path.isfile(os.path.join(d, "applications", "vimvibe.desktop")) for d in dirs if d)
+
 
 def main():
     """Entry point: the Settings window with --settings, otherwise the resident overlay connected to the daemon."""
@@ -707,6 +762,11 @@ def main():
     ap.add_argument("--snapshot", help="after opening, save an image of this overlay window only (testing)")
     a = ap.parse_args()
     app = QApplication(sys.argv)
+    app.setApplicationName("vimvibe")
+    if desktop_entry_installed():
+        # names our windows "vimvibe"; Qt also registers that app id with the desktop portal, which only works when a
+        # matching vimvibe.desktop exists (install.sh adds it), otherwise the portal logs an error
+        app.setDesktopFileName("vimvibe")
     if a.settings:
         from vimvibe_settings import SettingsWindow
         w = SettingsWindow(read_config, write_config, DEFAULTS)
@@ -722,6 +782,7 @@ def main():
               bus.connect(SERVICE, PATH, IFACE, "Closed", router, "1closed()"),
               bus.connect(SERVICE, PATH, IFACE, "Refused", router, "1refused(QString)"),
               bus.connect(SERVICE, PATH, IFACE, "Key", router, "1key(QString)"),
+              bus.connect(SERVICE, PATH, IFACE, "OpenSettings", router, "1open_settings()"),
               bus.connect(SERVICE, PATH, IFACE, "Quitting", app, "1quit()")])
     # the overlay is useless without the daemon: exit with it however it stops (quit shortcut, kill, crash)
     watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchForUnregistration)

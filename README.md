@@ -92,6 +92,8 @@ For clicks that need the pointer (see [How it works](#how-it-works)), allow it o
 |---|---|
 | Open / close | **Meta+Shift+Space** (Esc also closes) |
 | Quit vimvibe completely (daemon + overlay) | **Meta+Shift+Q** (or `vimvibe stop`) |
+| Settings | **Ctrl+Shift+,** from anywhere (**Ctrl+,** while the overlay is open) |
+| Scroll | hold **Space** + **H J K L** (or I J K L) — scrolls the selected element, or the window; **Shift** = 4× further; release Space for fresh labels |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
 | Right click / double click / middle click | **Ctrl+Enter** / **Alt+Enter** / **Shift+Enter** |
 | Move the pointer onto it (hover) | **tap Ctrl** |
@@ -117,14 +119,38 @@ click — good for browsing. It stops on Esc, after you act on a text field, or 
 
 ## Settings
 
-Open the Settings window with `vimvibe settings`, or edit `~/.config/vimvibe/config.toml` by hand. Changes apply the
-next time the overlay opens; nothing needs restarting.
+Open the Settings window with **Ctrl+Shift+,** (or `vimvibe settings`). It has a live preview of the labels and edits
+`~/.config/vimvibe/config.toml`, which you can also edit by hand. Changes apply the next time the overlay opens.
+
+| Tab | What you can set |
+|---|---|
+| General | shortcuts (changed in System Settings), launch at login, window switching, app launching, panel labels |
+| Appearance | theme presets (Blue, Shortcat, Nord, Dracula, Gruvbox, Solarized light, High contrast); label background, text, outline and selected colours; font; label text size; overall label size; corner radius; capitals; panel style (dark/light), opacity, width, result rows, text size, position, key-hint line, hide-until-typing; screen dimming |
+| Labels & behaviour | when labels appear (immediately … 5 s, after input), Vimium-style auto-click, continuous mode, scroll keys (HJKL/IJKL) and distance |
+| Excluded apps | apps vimvibe must never read or click |
+| Accessibility & setup | setup check, turn accessibility on, keep it on after login, allow pointer control |
 
 ```toml
 [ui]
-accent = "#3b82f6"         # label + highlight colour. "#facc15" (yellow) gives Shortcat's look
-panel = "auto"             # search panel: auto (where it hides the fewest labels) | top | center | bottom
-label_scale = 1.0          # label size, 0.6–2.0
+theme = "Blue"             # preset the colours came from (informational)
+accent = "#3b82f6"         # label background ("#facc15" + label_text "#000000" = Shortcat's look)
+label_text = "auto"        # label text colour; auto = black or white, whichever reads
+label_border = "auto"      # label outline colour
+selected = "auto"          # highlight of the selected element/label (Shortcat uses light green, "#86efac")
+font = ""                  # font family; empty = desktop font
+label_font_size = 0        # points; 0 = automatic
+label_scale = 1.0          # overall label size, 0.6–2.0
+label_radius = 3           # corner radius, px
+uppercase = true           # SA vs sa (typing is case-insensitive)
+panel = "auto"             # auto | top | center | bottom
+panel_theme = "dark"       # dark | light
+panel_opacity = 0.96
+panel_width = 640
+rows = 9                   # result rows shown (Ctrl+1..9 reach the first nine)
+panel_font_size = 0        # points; 0 = automatic
+hint_line = true
+hide_panel_until_typing = false   # labels only until you type (Shortcat's "hide query pane")
+dim = 0                    # darken the screen behind the labels, percent 0–60
 
 [hints]
 delay_ms = 0               # when labels appear after opening (Shortcat's default is 2000)
@@ -132,24 +158,42 @@ after_input = false        # true: labels appear only once you start typing
 auto_activate = false      # true: a fully typed label clicks at once (Vimium-style), no Enter
 
 [behavior]
-continuous = false         # come back after each click (see above)
-continuous_delay_ms = 500  # how long to let the app react before re-reading
+continuous = false         # come back after each click
+continuous_delay_ms = 500
+
+[scroll]
+keys = "hjkl"              # or "ijkl"
+step = 3                   # wheel clicks per key press (Shift: 4×)
 
 [search]
 windows = true             # offer your other open windows as results (window switching)
-apps = true                # offer installed applications as results (type a name, Enter launches it)
-panel = true               # label Plasma's panels (taskbar, tray, clock) as well
+apps = true                # offer installed applications as results
+panel = true               # label Plasma's panels (only while they are visible)
 
 [apps]
-exclude = ["keepassxc", "org.kde.konsole"]   # apps vimvibe must never touch (next section)
+exclude = ["keepassxc", "org.kde.konsole"]
 
 [accessibility]
 enable_on_start = true     # the daemon turns desktop accessibility on when it starts
 ```
 
 One-off colour for a single run: `python3 ~/.local/share/vimvibe/vimvibe_palette.py --accent orange`
-(or set `VIMVIBE_ACCENT`). The shortcut is changed in **System Settings → Keyboard → Shortcuts → vimvibe**
-(the Settings window has a button for it).
+(or set `VIMVIBE_ACCENT`).
+
+## Scrolling
+
+Shortcat (docs: *Arrow Keys / Scroll*, an alpha feature) lets you hold **Space** and press **H J K L** (or I J K L)
+to send arrow keys, and **Space + Cmd + H J K L** to send scroll events where the pointer is; tapping Ctrl moves the
+pointer onto a result first, to choose what scrolls.
+
+vimvibe does the scroll part the same way, with one key less: hold **Space** and press **H J K L**.
+- What scrolls: the selected result's element when you have typed something (e.g. type `files`, then Space+J scrolls
+  that list), otherwise the middle of the window. The pointer is parked there for the scroll and put back afterwards.
+- How: real mouse-wheel clicks through the desktop's Remote Control permission (the same one used for clicks), so it
+  works in every app, accessible or not. While you scroll, the overlay lets the wheel events through to the app.
+- Release Space: the window is re-read and fresh labels appear for what scrolled into view.
+- Arrow keys (Shortcat's Space+HJKL) are not sent: that needs keyboard permission from the desktop, which vimvibe
+  does not ask for yet.
 
 ## Excluding apps
 
@@ -243,7 +287,8 @@ core/                Rust: AT-SPI reading, matching, labels, KWin bridge, daemon
   src/pointer.rs     RemoteDesktop portal clicks
   src/config.rs      ~/.config/vimvibe/config.toml (parts the daemon enforces)
   src/doctor.rs      setup check
-palette/             Python/Qt: overlay (vimvibe_palette.py) and Settings window (vimvibe_settings.py)
+palette/             Python/Qt: overlay (vimvibe_palette.py), Settings window (vimvibe_settings.py),
+                     shared config + theme (vimvibe_style.py)
 packaging/           launcher script, optional systemd user unit
 research/            design notes and measurements (start with 09, 10, 11)
 ```
@@ -259,8 +304,9 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `Elements() → json` | every element with id, label, role, screen rectangle |
 | `Activate(i)` / `ActivateId(id)` / `ActivateWith(id, action)` | act on a hit / an element; action = `click right double middle hover focus` |
 | `Refresh()` | re-read the same window |
+| `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEnd()` | park the pointer over element `id` (or the window), scroll by wheel clicks, put it back |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |
-| signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()` | |
+| signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()`, `Key(json)`, `OpenSettings()` | |
 
 Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Status`
 
@@ -283,7 +329,10 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 | Launch applications | ✅ (installed apps; also from the start menu) |
 | Window title-bar buttons | ✅ (close, maximize, minimize, window menu, all desktops) |
 | Menu bar / app menu search, Dock | ⏳ planned ([research/11](research/11-os-scope-plan.md)) |
-| Space+HJKL arrow keys / scroll | ⏳ planned (needs keyboard permission and a true overlay surface) |
+| Space+Cmd+HJKL scroll | ✅ as Space+HJKL (or IJKL), wheel events through the pointer permission |
+| Space+HJKL arrow keys | ⏳ planned (needs the desktop's keyboard permission) |
+| Preferences window (Cmd+,) | ✅ Ctrl+Shift+, anywhere, Ctrl+, in the overlay; plus label/panel theming Shortcat doesn't offer |
+| Hide query pane by default | ✅ `hide_panel_until_typing` |
 | Emoji search with `:` | ⏳ planned |
 | Cmd+Enter / Shift+Enter modifier clicks | ⏳ planned (Shift+Enter is middle click for now) |
 | — | ➕ excluded-apps list, setup doctor, works with any UI over D-Bus |

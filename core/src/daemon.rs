@@ -10,12 +10,14 @@
 //!   ActivateId(id) -> json  activate element `id` (from Elements/Search), then close the snapshot
 //!   ActivateWith(id, action) -> json  same with action click | right | double | middle | hover | focus
 //!   Refresh() -> json     re-read the same window (emits Opened again)
+//!   ScrollStart(id), Scroll(dx, dy), ScrollEnd()   scroll the element `id` (or the window) with wheel clicks
 //! Apps listed under [apps] exclude in ~/.config/vimvibe/config.toml are never read: Trigger emits Refused instead
 //! (also emitted, with only `error`, when the focused window cannot be read).
 //!   Close()               drop the snapshot; emits `Closed`
 //!   Quit()                shut down (same as the Meta+Shift+Q shortcut); emits `Quitting` first
 //!   Status() -> json      accessibility/KWin/shortcut state and the last timings
-//! Signals: Opened(json), Closed(), Refused(json), Quitting(), Key(json) (typed over a popup, see keygrab.rs).
+//! Signals: Opened(json), Closed(), Refused(json), Quitting(), Key(json) (typed over a popup, see keygrab.rs),
+//! OpenSettings() (Ctrl+Shift+, pressed).
 //!
 //! Nothing runs while idle: no polling, the only wake-ups are D-Bus messages (hotkey, KWin focus reports, UI calls).
 
@@ -38,6 +40,9 @@ const UI_CAPTION: &str = "vimvibe-palette";
 pub(crate) const COMPONENT: &str = "vimvibe";
 const ACTION: &str = "toggle";
 const QUIT_ACTION: &str = "quit";
+const SETTINGS_ACTION: &str = "settings";
+/// Ctrl+Shift+Comma, and the same keys as most layouts report them with Shift held (Ctrl+Shift+Less).
+const SETTINGS_KEYS: [i32; 2] = [0x0400_0000 | 0x0200_0000 | 0x2c, 0x0400_0000 | 0x0200_0000 | 0x3c];
 /// Qt::META | Qt::SHIFT | Qt::Key_Q: quit vimvibe (daemon and overlay).
 const QUIT_KEY: i32 = 0x1000_0000 | 0x0200_0000 | 0x51;
 /// Apps whose windows are popups that close the moment another window takes the keyboard (Plasma's launcher, tray and
@@ -100,6 +105,8 @@ struct Shared {
     grab_started: tokio::sync::Notify,
     /// Menus that are open right now (Qt keeps them out of the tree; see popups.rs).
     menus: Option<Arc<crate::popups::Menus>>,
+    /// While scrolling: where the pointer was before we parked it over the scroll target (restored at the end).
+    scroll_origin: Mutex<Option<(f64, f64)>>,
 }
 
 struct Daemon(Arc<Shared>);
@@ -197,6 +204,61 @@ impl Daemon {
         .to_string()
     }
 
+    /// Start scrolling: park the pointer over element `id` (or the middle of the window when `id` < 0), remembering
+    /// where it was. Apps scroll whatever is under the pointer, so this picks *what* scrolls. Needs `pointer-setup`.
+    async fn scroll_start(&self, id: i32) -> String {
+        let (target, geometry) = {
+            let guard = self.0.snap.lock().await;
+            let Some(s) = guard.as_ref() else { return json!({"ok": false, "error": "no open snapshot"}).to_string() };
+            let el = usize::try_from(id).ok().and_then(|i| s.els.get(i)).filter(|e| e.rect.2 > 0 && e.rect.3 > 0);
+            (el.map(|e| e.rect), s.geometry)
+        };
+        let Some((ox, oy, ww, wh)) = geometry.filter(|g| g.2 > 0) else { return json!({"ok": false, "error": "the window's position is unknown"}).to_string() };
+        let (x, y) = match target {
+            Some((ex, ey, ew, eh)) => ((ox + ex + ew / 2) as f64, (oy + ey + eh / 2) as f64),
+            None => ((ox + ww / 2) as f64, (oy + wh / 2) as f64),
+        };
+        let mut guard = self.0.pointer.lock().await;
+        if guard.is_none() {
+            match crate::pointer::Pointer::connect(false).await {
+                Ok(p) => *guard = Some(p),
+                Err(e) => return json!({"ok": false, "error": format!("scrolling needs pointer permission: {e}")}).to_string(),
+            }
+        }
+        let mut origin = self.0.scroll_origin.lock().await;
+        if origin.is_none() {
+            *origin = kwin::cursor_pos(Duration::from_millis(500)).await;
+        }
+        match guard.as_ref().expect("connected").move_to(x, y).await {
+            Ok(_) => json!({"ok": true, "at": [x, y]}).to_string(),
+            Err(e) => {
+                *guard = None;
+                json!({"ok": false, "error": e.to_string()}).to_string()
+            }
+        }
+    }
+
+    /// Scroll by wheel clicks where `ScrollStart` parked the pointer: `dy` > 0 down, `dx` > 0 right.
+    async fn scroll(&self, dx: i32, dy: i32) -> String {
+        let guard = self.0.pointer.lock().await;
+        match guard.as_ref() {
+            Some(p) => match p.scroll(dx.clamp(-50, 50), dy.clamp(-50, 50)).await {
+                Ok(()) => json!({"ok": true}),
+                Err(e) => json!({"ok": false, "error": e.to_string()}),
+            },
+            None => json!({"ok": false, "error": "call ScrollStart first"}),
+        }
+        .to_string()
+    }
+
+    /// Stop scrolling: put the pointer back where it was before `ScrollStart`.
+    async fn scroll_end(&self) {
+        let origin = self.0.scroll_origin.lock().await.take();
+        if let (Some((x, y)), Some(p)) = (origin, self.0.pointer.lock().await.as_ref()) {
+            let _ = p.move_to(x, y).await;
+        }
+    }
+
     /// Re-read the same window (Shortcat's Cmd+R): drops the snapshot without `Closed`, then emits `Opened` again.
     async fn refresh(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         self.0.snap.lock().await.take();
@@ -232,6 +294,10 @@ impl Daemon {
     /// A key typed while a passive overlay is open: `{"name": "a", "text": true}` (Esc is handled by the daemon).
     #[zbus(signal)]
     async fn key(emitter: &SignalEmitter<'_>, payload: &str) -> zbus::Result<()>;
+
+    /// The settings shortcut (Ctrl+Shift+,) was pressed: the UI opens its Settings window.
+    #[zbus(signal)]
+    async fn open_settings(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     /// Emitted right before the daemon exits; UIs should exit too.
     #[zbus(signal)]
@@ -567,12 +633,17 @@ fn ms(d: Duration) -> f64 {
 /// listen on. kglobalaccel keeps a key the user changed in System Settings over these defaults.
 async fn register_hotkeys(conn: &zbus::Connection) -> anyhow::Result<zbus::zvariant::OwnedObjectPath> {
     let call = |member: &'static str| (Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), member);
-    for (action, label, key) in [(ACTION, "Toggle palette", DEFAULT_KEY), (QUIT_ACTION, "Quit vimvibe", QUIT_KEY)] {
+    let shortcuts: [(&str, &str, Vec<i32>); 3] = [
+        (ACTION, "Toggle palette", vec![DEFAULT_KEY]),
+        (QUIT_ACTION, "Quit vimvibe", vec![QUIT_KEY]),
+        (SETTINGS_ACTION, "Open vimvibe settings", SETTINGS_KEYS.to_vec()),
+    ];
+    for (action, label, keys) in shortcuts {
         let id = vec![COMPONENT, action, "vimvibe", label];
         let (d, p, i, m) = call("doRegister");
         conn.call_method(d, p, i, m, &(id.clone(),)).await?;
         let (d, p, i, m) = call("setShortcut");
-        conn.call_method(d, p, i, m, &(id, vec![key], 2u32)).await?; // 2 = SetPresent
+        conn.call_method(d, p, i, m, &(id, keys, 2u32)).await?; // 2 = SetPresent
     }
     let (d, p, i, m) = call("getComponent");
     let path: zbus::zvariant::OwnedObjectPath = conn.call_method(d, p, i, m, &(COMPONENT,)).await?.body().deserialize()?;
@@ -613,6 +684,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         generation: Default::default(),
         grab_started: Default::default(),
         menus,
+        scroll_origin: Mutex::new(None),
     });
     let conn = zbus::connection::Builder::session()?
         .name(NAME)
@@ -704,6 +776,9 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
                         let action = msg.body().deserialize::<(String, String, i64)>().map(|(_, a, _)| a).unwrap_or_default();
                         if action == QUIT_ACTION {
                             sh2.quit.notify_one();
+                        } else if action == SETTINGS_ACTION {
+                            close(&sh2, &em2).await;
+                            let _ = Daemon::open_settings(&em2).await;
                         } else {
                             trigger(&sh2, &em2).await;
                         }
@@ -724,7 +799,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
     close(&sh, &em).await; // releases the keystroke listener if an overlay is open over a popup
     let _ = Daemon::quitting(&em).await; // the overlay exits on this
     if sh.hotkey.load(Relaxed) {
-        for action in [ACTION, QUIT_ACTION] {
+        for action in [ACTION, QUIT_ACTION, SETTINGS_ACTION] {
             let _ = conn.call_method(Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), "unregister", &(COMPONENT, action)).await;
         }
     }
