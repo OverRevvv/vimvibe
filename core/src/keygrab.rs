@@ -26,6 +26,9 @@ const TYPES: u32 = (1 << 0) | (1 << 1);
 /// Safety: if vimvibe dies while registered, the registry's calls to the vanished listener fail and count as "not
 /// consumed" (measured), so keys reach the apps again; the dead entry itself stays until the session ends.
 const MASKS: [u32; 8] = [0, 1, 2, 3, 16, 17, 18, 19];
+/// Popup mode also listens with Ctrl held, but takes only Ctrl+Space (hide / show the panel) and lets every other Ctrl
+/// combination through to the popup.
+const CTRL_MASKS: [u32; 8] = [4, 5, 6, 7, 20, 21, 22, 23];
 /// Arrow mode also listens with Ctrl and Alt held (Space+Ctrl+J = Ctrl+Down), so those masks are added.
 const ARROW_EXTRA: [u32; 3] = [4, 8, 12];
 
@@ -52,6 +55,8 @@ pub struct Key {
     pub text: bool,
     /// Pressed (true) or released.
     pub pressed: bool,
+    /// Ctrl was held (popup mode only reports Ctrl+Space, the hide-panel key).
+    pub ctrl: bool,
     /// X keycode (physical key).
     #[serde(skip)]
     pub code: u32,
@@ -76,19 +81,23 @@ impl Listener {
     /// (type, id, hw_code, modifiers, timestamp, event_string, is_text) -> consumed. The registry calls listeners
     /// with `(uiuuisb)` (seen on the bus), while toolkits hand events *to* the registry as `(uinnisb)`.
     fn notify_event(&self, ev: (u32, i32, u32, u32, i32, String, bool)) -> bool {
-        let (kind, _id, code, _mods, _ts, name, text) = ev;
+        let (kind, _id, code, mods, _ts, name, text) = ev;
         self.state.seen.store(true, Ordering::SeqCst);
         let pressed = kind == 0;
         match self.state.mode.load(Ordering::SeqCst) {
             MODE_POPUP => {
-                if pressed {
-                    let _ = self.tx.send(Key { name, text, pressed, code });
+                let ctrl = mods & 4 != 0;
+                if ctrl && code != KC_SPACE {
+                    return false; // Ctrl combinations belong to the popup
                 }
-                true // the popup must not see any plain key
+                if pressed {
+                    let _ = self.tx.send(Key { name, text, pressed, code, ctrl });
+                }
+                true // the popup must not see any plain key (nor Ctrl+Space)
             }
             MODE_ARROWS => {
                 if matches!(code, KC_ESC | KC_I | KC_H | KC_J | KC_K | KC_L | KC_SPACE | KC_D | KC_U) {
-                    let _ = self.tx.send(Key { name, text, pressed, code });
+                    let _ = self.tx.send(Key { name, text, pressed, code, ctrl: false });
                     true
                 } else {
                     false // everything else (Shift, the arrow keys we send, other letters) goes to the app
@@ -107,6 +116,9 @@ pub async fn serve(conn: &zbus::Connection, tx: UnboundedSender<Key>, state: Arc
 /// Modifier masks to register for a mode.
 fn masks(mode: u8) -> Vec<u32> {
     let mut m = MASKS.to_vec();
+    if mode == MODE_POPUP {
+        m.extend(CTRL_MASKS);
+    }
     if mode == MODE_ARROWS {
         m.extend(MASKS.iter().flat_map(|b| ARROW_EXTRA.iter().map(move |x| b | x)));
     }
@@ -132,7 +144,7 @@ pub async fn release(conn: &zbus::Connection, state: &State) {
     state.mode.store(MODE_OFF, Ordering::SeqCst);
     let Ok(path) = ObjectPath::try_from(PATH) else { return };
     let keys: Vec<(i32, i32, String, i32)> = vec![];
-    for mask in masks(MODE_ARROWS) {
+    for mask in masks(MODE_ARROWS).into_iter().chain(CTRL_MASKS) {
         let _ = conn.call_method(Some(DEC_DEST), DEC_PATH, Some(DEC_IFACE), "DeregisterKeystrokeListener", &(&path, &keys, mask, TYPES)).await;
     }
 }

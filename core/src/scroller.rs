@@ -134,6 +134,7 @@ impl Scroller {
 mod tests {
     use super::*;
 
+    // Step the scroller in 8 ms ticks for `ms` milliseconds; returns the total distance and the tick count.
     fn run(s: &Scroller, ms: usize) -> (f64, f64, usize) {
         let (mut sx, mut sy, mut n) = (0.0, 0.0, 0);
         for _ in 0..ms / 8 {
@@ -148,6 +149,7 @@ mod tests {
         (sx, sy, n)
     }
 
+    // A glide delivers exactly the requested distance, in steady steps.
     #[test]
     fn covers_the_whole_distance_smoothly() {
         let s = Scroller::default();
@@ -158,6 +160,7 @@ mod tests {
         assert!(!s.busy());
     }
 
+    // The glide never goes past the target and eases in.
     #[test]
     fn never_overshoots_and_starts_gently() {
         let s = Scroller::default();
@@ -176,6 +179,7 @@ mod tests {
         assert!((total - 100.0).abs() < 0.05);
     }
 
+    // Repeated key presses (a held key) add up to one glide with the exact total; a reversal then scrolls back the new distance.
     #[test]
     fn repeats_merge_into_one_glide_and_reversal_works() {
         let s = Scroller::default();
@@ -196,6 +200,7 @@ mod tests {
         assert!((y + 30.0).abs() < 0.05, "{y}");
     }
 
+    // A jump to an edge is large and immediate; an idle scroller produces nothing.
     #[test]
     fn jump_and_idle() {
         let s = Scroller::default();
@@ -206,6 +211,7 @@ mod tests {
         assert!(t.done && (t.dx - 5.0).abs() < 0.05 && (t.dy + 2.0).abs() < 0.05);
     }
 
+    // A short glide lands exactly on its target distance.
     #[test]
     fn short_settle_is_stable() {
         let s = Scroller::default();

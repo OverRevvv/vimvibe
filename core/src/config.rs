@@ -14,6 +14,7 @@ pub struct Config {
     pub search: Search,
     pub accessibility: Accessibility,
     pub scroll: Scroll,
+    pub mouse: Mouse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,17 +51,35 @@ impl Default for Scroll {
     }
 }
 
+/// Keyboard mouse control (the grid and H J K L pointer movement). Only the master switch matters to the daemon; the
+/// grid size, alphabet and speeds are read by the overlay.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Mouse {
+    pub enabled: bool,
+}
+
+impl Default for Mouse {
+    /// On by default; turning it off makes the daemon refuse every `Pointer*` call.
+    fn default() -> Self {
+        Mouse { enabled: true }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Accessibility {
     /// Turn desktop accessibility on when the daemon starts (vimvibe can't see any app without it).
     pub enable_on_start: bool,
+    /// When vimvibe is opened over a Chromium-based app that was started without `--force-renderer-accessibility` (so it
+    /// shows nothing), offer to restart it with the flag.
+    pub offer_restart: bool,
 }
 
 impl Default for Accessibility {
     /// Accessibility is turned on at daemon start unless the user opts out.
     fn default() -> Self {
-        Accessibility { enable_on_start: true }
+        Accessibility { enable_on_start: true, offer_restart: true }
     }
 }
 
@@ -165,6 +184,7 @@ impl Apps {
 mod tests {
     use super::*;
 
+    // Profile names (dev, beta) are sanitised so they cannot escape the config directory.
     #[test]
     fn profile_names_are_clean() {
         // SAFETY: tests in this crate don't read the environment concurrently
@@ -175,6 +195,7 @@ mod tests {
         assert_eq!(dir_name(), "vimvibe");
     }
 
+    // config.toml parses, and an excluded-app entry matches by name, window class or process name.
     #[test]
     fn parses_and_matches() {
         let c: Config = toml::from_str("[apps]\nexclude = [\"KeePassXC\", \"konsole\"]\n[ui]\naccent = \"red\"\n").unwrap();

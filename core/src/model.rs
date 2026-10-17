@@ -132,6 +132,7 @@ pub async fn extents(comp: &ComponentProxy<'_>) -> Option<(i32, i32, i32, i32)> 
 mod tests {
     use super::pick_action;
 
+    // The activation ladder picks click/press/toggle over other actions.
     #[test]
     fn prefers_activating_actions() {
         assert_eq!(pick_action(&["click"]), Some(0));
@@ -140,6 +141,7 @@ mod tests {
         assert_eq!(pick_action(&[""]), Some(0)); // Electron reports an unnamed default action
     }
 
+    // Scroll and menu helper actions are never chosen as the click action.
     #[test]
     fn never_picks_scroll_or_menu_helpers() {
         assert_eq!(pick_action(&["listitem.scroll-to"]), None);

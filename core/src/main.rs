@@ -1,4 +1,5 @@
 mod apps;
+mod chromium;
 mod config;
 mod decor;
 mod daemon;
@@ -112,6 +113,9 @@ enum Cmd {
         /// Write ~/.config/environment.d/50-vimvibe-accessibility.conf (toolkit accessibility variables; applies at next login).
         #[arg(long)]
         fix_env: bool,
+        /// Add --force-renderer-accessibility to the launchers of Chrome, Chromium, Brave, Edge, Vivaldi and VS Code (copies into ~/.local/share/applications).
+        #[arg(long)]
+        fix_chrome: bool,
     },
     /// Run the resident daemon: warm focus tracking, global shortcut, D-Bus API for UIs.
     Daemon {
@@ -209,8 +213,8 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => {}
     }
-    if let Cmd::Doctor { fix, fix_env } = cli.cmd {
-        std::process::exit(doctor::run(fix, fix_env, cli.json).await?);
+    if let Cmd::Doctor { fix, fix_env, fix_chrome } = cli.cmd {
+        std::process::exit(doctor::run(fix, fix_env, fix_chrome, cli.json).await?);
     }
     if let Cmd::Status = cli.cmd {
         println!("session accessibility enabled: {}", read_session_accessibility().await?);

@@ -1,8 +1,8 @@
-# vimvibe-core (prototype)
+# vimvibe-core
 
 > Users: see the top-level [README](../README.md) for install, usage and settings. This file covers the core only.
 
-Keyboard-driven "click anything by typing its name" core for Linux, built on AT-SPI2, with a resident daemon (KDE Plasma 6 / Wayland first). **Prototype**: see `../research/` for the evidence behind each design choice (start with 09 and 10), and `../palette/` for the thin UI client.
+Keyboard-driven "click anything by typing its name" core for Linux, built on AT-SPI2, with a resident daemon (KDE Plasma 6 / Wayland first). **Working prototype**: see `../research/` for the evidence behind each design choice (start with 09 and 10), and `../palette/` for the thin UI client.
 
 ```
 cargo build --release          # binary: target/release/vimvibe-core
@@ -19,7 +19,8 @@ vimvibe-core cursor | click X Y [--right] [--double]   # pointer tools (need poi
 Flags: `--json`, `--strategy auto|cache|collection|walk`, `--with-actions`, `--timeout-ms`, `--include-hidden`, `--enable-a11y`.
 
 ## Daemon API
-Session bus, `org.vimvibe.Daemon` at `/org/vimvibe/Daemon`: `Trigger()` (snapshot the focused window, emit `Opened`; toggles), `Search(q)`, `Activate(i)`, `Close()`, `Status()`; signals `Opened(json)`, `Closed()`. On non-KDE desktops bind any key to `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Trigger`.
+Session bus, `org.vimvibe.Daemon` at `/org/vimvibe/Daemon`. The full method and signal list is in the header comment of
+`src/daemon.rs` and in the top-level README (*Developer guide → D-Bus API*). On non-KDE desktops bind any key to `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Trigger`.
 
 ## How it works
 - Window: KWin script (reports over our own D-Bus service) gives the focused window's PID and `clientGeometry`; the AT-SPI app is matched by PID. Screen position = geometry origin + window-relative extents.
@@ -27,6 +28,6 @@ Session bus, `org.vimvibe.Daemon` at `/org/vimvibe/Daemon`: `Trigger()` (snapsho
 - Matching: `nucleo-matcher` fuzzy, Shortcat-style role words (`button`, `btn`, `link`, `check`, `radio`, `tab`, `field`, ...), a small synonym table, shorter-label/prefix/exact bonuses, disabled elements last.
 - Acting, in order: the best AT-SPI action (click/press/toggle…) → selection through the parent (tabs, list rows) → focus → **pointer click** through the RemoteDesktop portal (GTK4 check boxes; needs `pointer-setup` once; cursor restored afterwards). `--no-pointer` disables the last step.
 
-Overlay: `python3 ../palette/vimvibe_palette.py [--accent COLOR]` shows the search panel and a Shortcat-style letter label on every element: type a label (`pr`) or part of a name, then Enter; Alt shows all labels again; Ctrl+1–9 picks a row. Blue by default; settings (`[ui] accent`, `[hints] delay_ms`, `[hints] auto_activate`) live in `~/.config/vimvibe/config.toml`, see the palette's docstring.
+Overlay: `python3 ../palette/vimvibe_palette.py` shows the search panel and a letter label on every element. Keys and settings are documented in the palette's docstring and the top-level README.
 
-Known gaps: keystrokes typed before the palette appears reach the target app (no keyboard grab yet); pointer fallback untested on HiDPI/multi-monitor; shortcut and focus tracking are KDE-only. See `../research/09-core-prototype.md`.
+Known gaps are listed in the top-level README (*Known limitations*); contributors start with [CONTRIBUTING](../CONTRIBUTING.md).

@@ -38,6 +38,8 @@ pub async fn track(conn: &AccessibilityConnection) -> anyhow::Result<Arc<Menus>>
     let menus = Arc::new(Menus::default());
     let (m2, zc) = (menus.clone(), conn.connection().clone());
     tokio::spawn(async move {
+        // Read every D-Bus message on the accessibility connection and keep only AT-SPI `StateChanged` signals;
+        // of those only the "showing" state matters: showing=1 may be a new menu, showing=0 means one went away.
         let mut stream = zbus::MessageStream::from(&zc);
         while let Some(Ok(msg)) = stream.next().await {
             let h = msg.header();
@@ -47,6 +49,7 @@ pub async fn track(conn: &AccessibilityConnection) -> anyhow::Result<Arc<Menus>>
             {
                 continue;
             }
+            // The signal body comes in two shapes depending on the AT-SPI version; accept either one.
             let body = msg.body();
             let Ok((kind, detail1)) = body
                 .deserialize::<(String, i32, i32, zbus::zvariant::OwnedValue, std::collections::HashMap<String, zbus::zvariant::OwnedValue>)>()

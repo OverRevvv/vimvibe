@@ -15,7 +15,8 @@ Press **Meta+Shift+Space** in any app. Every button, link, tab and field in the 
 inside each split terminal; the panel lists the matches with their labels and Ctrl+1…9 shortcuts.*
 
 > **Status: working prototype.** Built and tested on Fedora 44, KDE Plasma 6.7 on Wayland. Other desktops are planned
-> (see [research/11](research/11-os-scope-plan.md)). Expect rough edges; reports are welcome.
+> (see [research/11](research/11-os-scope-plan.md)). Expect rough edges; reports and contributions are welcome
+> ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - [How it works](#how-it-works)
 - [Install](#install)
@@ -23,13 +24,14 @@ inside each split terminal; the panel lists the matches with their labels and Ct
 - [Using it](#using-it)
 - [Settings](#settings)
 - [Scrolling and arrow keys](#scrolling-and-arrow-keys)
+- [Keyboard mouse](#keyboard-mouse)
 - [Customizing keys](#customizing-keys)
 - [Excluding apps](#excluding-apps)
 - [Making apps visible](#making-apps-visible-accessibility)
 - [Troubleshooting](#troubleshooting)
 - [Commands](#command-reference)
 - [Upgrading and developing side by side](#upgrading-and-developing-side-by-side)
-- [Developer guide](#developer-guide)
+- [Developer guide](#developer-guide) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - [Shortcat feature parity](#shortcat-feature-parity)
 - [Privacy and security](#privacy-and-security)
 
@@ -114,6 +116,8 @@ you want Space + H/J/K/L arrow keys).
 | Give it keyboard focus (e.g. a text field) | **tap Ctrl twice** |
 | Act on result row *n* / just select it | **Ctrl+1…9** / **Ctrl+Shift+1…9** |
 | Move the selection | **↑ ↓**, **Tab / Shift+Tab**, **Ctrl+N / Ctrl+P**, **PageUp / PageDown**, mouse wheel |
+| Mouse grid: pick a spot on screen by typing letters | **Ctrl+G**, then two letters per zoom level, **Enter** clicks ([details](#keyboard-mouse)) |
+| Move the pointer with the keyboard | **Ctrl+M**, then hold **H J K L** (**Shift** faster, **Alt** precise), **Enter** clicks |
 | Hide / show the search panel (labels stay) | **Ctrl+Space** ([rebind it](#customizing-keys)) |
 | Clear the search, show every label again | **tap Alt** |
 | Re-read the window (after the page changed) | **Ctrl+R** |
@@ -194,6 +198,19 @@ edge_ms = 600              # how long that jump takes
 natural = false            # touchpad-style direction
 invert_horizontal = false  # swap left and right for H / L
 
+[mouse]
+enabled = true             # master switch for the keyboard mouse (grid and H J K L movement); false turns it all off
+open_in = "search"         # what vimvibe opens in: "search" or "grid"
+scope = "window"           # what the grid covers at first: "window" or "screen"
+cols = 5                   # cells per grid level
+rows = 5
+alphabet = "abcdefghijklmnopqrstuvwxyz"   # cell names are a row letter + a column letter from this
+max_depth = 4              # how many times a cell can be divided again
+keys = "hjkl"              # pointer movement keys: "hjkl" or "ijkl"
+speed = 500                # px per second
+fast = 3                   # Shift multiplies the speed by this (Alt slows it to a quarter)
+accelerate = true          # speed up while a key is held
+
 [search]
 windows = true             # offer your other open windows as results (window switching)
 apps = true                # offer installed applications as results
@@ -204,6 +221,7 @@ exclude = ["keepassxc", "org.kde.konsole"]
 
 [accessibility]
 enable_on_start = true     # the daemon turns desktop accessibility on when it starts
+offer_restart = true       # offer to restart a Chromium-based app (Chrome, Brave, Electron) that shows nothing, with accessibility on
 ```
 
 One-off colour for a single run: `python3 ~/.local/share/vimvibe/vimvibe_palette.py --accent orange`
@@ -273,6 +291,37 @@ Your desktop shows its *Remote Control* dialog once: allow **pointer** (clicks, 
 `vimvibe doctor` shows what is allowed. (Scrolling needs the pointer part only.) Revoke it any time in **System Settings → Security & Privacy → Remote
 Control**, or delete `~/.local/state/vimvibe/pointer-token`.
 
+## Keyboard mouse
+
+Move and click the pointer without the mouse, for anything vimvibe has no label for (canvases, maps, games, video
+players). Open vimvibe as usual, then:
+
+**The grid — Ctrl+G.** The target window is divided into 5 × 5 cells named by two letters: the row letter, then the
+column letter (`aa ab ac ad ae` across the top row, `ba bb …` below). Type a cell's two letters and it fills the view and
+is divided again; keep going as deep as you like (4 times by default). Then:
+
+| Key | Does |
+|---|---|
+| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Alt+Enter** double, **Shift+Enter** middle click) |
+| **Space** | only move the pointer there, no click |
+| **Backspace** | zoom out one step (or drop a half-typed cell name) |
+| **Ctrl+Shift+G** | switch between the window and the whole screen |
+| **Ctrl+M** | continue with H J K L from here |
+| **Esc** | back to the search (a second Esc closes) |
+
+Clicking a cell with the mouse zooms into it; right click zooms out.
+
+**H J K L movement — Ctrl+M.** Hold a direction key and the pointer glides, getting faster the longer you hold; two keys
+make a diagonal. **Shift** is faster, **Alt** is precise. **Enter** clicks where the pointer is (same modifiers as above),
+**Space** leaves it there, **Esc** goes back. The page under the pointer shows hover effects as you move.
+
+Everything is customizable in **Settings → Mouse** (the `[mouse]` table above): grid size and letters, how deep a cell
+can be divided, whether the grid covers the window or the screen, speeds, the movement layout, opening vimvibe
+straight in the grid — or turn the whole feature off with *Keyboard mouse*. The keys are in **Settings → Keys**
+(`mouse_grid`, `mouse_move`, `mouse_place`, `mouse_scope`, `mouse_back`; Enter and the click variants are the same keys
+as in the search). The pointer ends where you put it and stays there. It needs the pointer permission
+([see above](#the-permission)); the grid covers the screen the window is on, and it is not available over Plasma popups.
+
 ## Customizing keys
 
 Every key the overlay reacts to can be changed in **Settings → Keys**: click *Change…* and press the combination you
@@ -298,12 +347,17 @@ row_act = ["Ctrl"]                     # + 1…9: act on that result row
 row_select = ["Ctrl+Shift"]            # + 1…9: only select it
 tap_labels = ["Alt"]                   # tap alone: clear the search, show every label (Ctrl, Alt, Shift or [] = off)
 tap_hover = ["Ctrl"]                   # tap alone: hover (twice: focus)
+mouse_grid = ["Ctrl+G"]                # keyboard mouse: the zooming grid
+mouse_move = ["Ctrl+M"]                # keyboard mouse: H J K L moves the pointer
+mouse_place = ["Space"]                # keyboard mouse: leave the pointer here, no click
+mouse_scope = ["Ctrl+Shift+G"]         # grid: window / whole screen
+mouse_back = ["Backspace"]             # grid: zoom out
 ```
 
 Limits: the global shortcuts that open and quit vimvibe are KDE shortcuts (System Settings → Shortcuts → *vimvibe*,
 linked from the Keys tab). Space + H J K L / D / U follow physical key positions (they are also read by the daemon);
 choose between the Vim and the arrow layout in *Labels & behaviour*. Over the start menu and other popups vimvibe can't
-see Ctrl/Alt combinations, so the keys there keep their defaults.
+see most Ctrl/Alt combinations, so the keys there keep their defaults (Ctrl+Space, hide / show the panel, is the one exception).
 
 ## Excluding apps
 
@@ -321,8 +375,8 @@ vimvibe can only see apps that expose an accessibility tree. `vimvibe doctor` li
 | App type | What to do |
 |---|---|
 | Qt / KDE apps, GTK 3/4 apps, Firefox | turn accessibility on (`vimvibe doctor --fix`), then **restart the app** |
-| Chrome, Chromium, Edge, Brave | start with `--force-renderer-accessibility` |
-| Electron apps (VS Code, Discord, Slack, …) | start with `--force-renderer-accessibility` |
+| Chrome, Chromium, Edge, Brave, Vivaldi, any Chromium engine | need `--force-renderer-accessibility` (nothing on the accessibility bus can switch it on later — measured). vimvibe takes care of it: open vimvibe over such a window that shows nothing and it offers to **restart the app with the flag** (tabs come back) and fixes its menu launchers so it starts that way from then on. Same thing by hand: `vimvibe doctor --fix-chrome`, then quit the browser completely. Programs are recognised by their files, not their name. Turn the offer off with `[accessibility] offer_restart = false` |
+| Electron apps (VS Code, Discord, Slack, …) | same as Chromium: vimvibe offers the restart |
 | Java apps | need the Java ATK bridge |
 | Games, Tk, Wine, apps drawn without a toolkit | not supported yet (a pixel-based fallback is planned) |
 
@@ -338,7 +392,7 @@ Accessibility is a session setting that is off by default on most distributions;
 | The start menu closes when vimvibe opens | the overlay could not use layer-shell (`layer-shell-qt`, normally installed with Plasma): check `vimvibe logs` |
 | vimvibe keeps running / want it gone | **Meta+Shift+Q**, or `vimvibe stop` |
 | Notification "vimvibe is off for this app" | it's in your excluded list |
-| Few or no labels in Chrome/Electron | start the app with `--force-renderer-accessibility` |
+| Few or no labels in Chrome/Electron | `vimvibe doctor --fix-chrome`, then quit the app completely and reopen it from the menu (or start it with `--force-renderer-accessibility`) |
 | Labels in the wrong place | report it with your scaling and monitor setup (HiDPI/multi-monitor are not tested yet) |
 | "pointer control is not set up" | run `vimvibe-core pointer-setup` once and approve the dialog |
 | "Arrow keys need keyboard permission" | run `vimvibe-core pointer-setup` again and allow the keyboard too |
@@ -352,7 +406,7 @@ Accessibility is a session setting that is off by default on most distributions;
 
 ```text
 vimvibe start | stop (= quit) | restart | status | settings | logs | open | help
-vimvibe doctor [--fix] [--fix-env]
+vimvibe doctor [--fix] [--fix-env] [--fix-chrome]
 
 vimvibe-core <command> [--app NAME] [--json] [--strategy auto|cache|walk] ...
   daemon            the resident service (what `vimvibe start` runs)
@@ -439,20 +493,33 @@ python3 palette/vimvibe_palette.py --trigger --query sa --quit-after 5   # open 
 
 ```
 core/                Rust: AT-SPI reading, matching, labels, KWin bridge, daemon, pointer, doctor
+  src/daemon.rs      D-Bus service org.vimvibe.Daemon (the entry point for most behaviour)
   src/enumerate.rs   find the target window, read its elements (Cache / concurrent walk)
   src/matcher.rs     fuzzy search with role words and synonyms
   src/hints.rs       letter labels
   src/model.rs       elements and the activation ladder (action → selection → focus → pointer)
   src/kwin.rs        KWin scripts: focus, geometry, window list, raise, cursor
-  src/daemon.rs      D-Bus service org.vimvibe.Daemon
-  src/pointer.rs     RemoteDesktop portal clicks
+  src/decor.rs       title-bar buttons          src/popups.rs   menus and Plasma popups
+  src/apps.rs        installed applications as results
+  src/keygrab.rs     keys through the accessibility registry (over popups; arrow mode)
+  src/scroller.rs    smooth scrolling           src/pointer.rs  RemoteDesktop portal: clicks, motion, keys
+  src/chromium.rs    Chromium/Electron: detect, fix launchers, restart with --force-renderer-accessibility
   src/config.rs      ~/.config/vimvibe/config.toml (parts the daemon enforces), profiles (dev next to installed)
-  src/doctor.rs      setup check
+  src/doctor.rs      setup check and its --fix options
 packaging/icons/     the icon: vimvibe.svg (edit this) and the generated PNG sizes (`python3 packaging/icons/make-icons.py`)
 palette/             Python/Qt: overlay (vimvibe_palette.py), Settings window (vimvibe_settings.py),
-                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py)
+                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py),
+                     the mouse grid logic (vimvibe_mouse.py, tests: test_mouse.py)
 packaging/           launcher script, optional systemd user unit
 research/            design notes and measurements (start with 09, 10, 11)
+```
+
+Checks before a pull request (details and conventions in [CONTRIBUTING.md](CONTRIBUTING.md)):
+
+```bash
+cargo test   --release --manifest-path core/Cargo.toml
+cargo clippy --release --manifest-path core/Cargo.toml
+(cd palette && python3 -m unittest test_keys test_mouse)
 ```
 
 ### D-Bus API
@@ -466,6 +533,8 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `Elements() → json` | every element with id, label, role, screen rectangle |
 | `Activate(i)` / `ActivateId(id)` / `ActivateWith(id, action)` | act on a hit / an element; action = `click right double middle hover focus` |
 | `Refresh()` | re-read the same window |
+| `RestartWithAccessibility(pid)` | restart a Chromium-based app (only a main process that lacks `--force-renderer-accessibility`) with the flag, restoring its session, and fix its launchers |
+| `PointerMotion(dx, dy)`, `PointerAct(x, y, here, action)` | the keyboard mouse: move the pointer by whole pixels (no waiting); close the overlay, then `move`/`click`/`right`/`double`/`middle` at (x, y) or, with `here`, where the pointer is (`goto` only moves, keeping the overlay). Refused when `[mouse] enabled` is false |
 | `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEdge(dir)`, `ScrollEnd()` | park the pointer over element `id` (or the window), glide by `dx`/`dy` tenths of a wheel notch (returns at once; the glide carries on), jump to the top (`dir` -1) or bottom (1), put the pointer back after the glide |
 | `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-key mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |
@@ -511,8 +580,9 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 ## Known limitations
 
 - KDE Plasma (Wayland) only for now; focus tracking and the shortcut use KWin/kglobalaccel.
-- The overlay is a normal fullscreen window, not a layer-shell surface: keys typed in the instant between the shortcut
-  and the overlay appearing can reach the app, and KDE may animate the overlay.
+- The overlay is a layer-shell surface when `layer-shell-qt` is available (it ships with Plasma); without it, it falls
+  back to a normal fullscreen window, where keys typed in the instant between the shortcut and the overlay appearing
+  can reach the app and KDE may animate it.
 - Not yet tested: HiDPI/fractional scaling, multiple monitors, XWayland apps, very large pages with the overlay.
 - Only the focused window's elements (plus other windows as switch targets) — menus, tray, launcher: see the plan.
 - To find open menus (Qt keeps them out of the accessibility tree) vimvibe listens for "menu shown" events. While any
@@ -521,7 +591,9 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 - Menus that were already open when the daemon started are not known until they are reopened.
 - Over Plasma's popups (start menu, tray, calendar) and open menus vimvibe reads your keys through the accessibility registry instead
   of taking the keyboard (so the popup stays open). Plain keys and Shift go to vimvibe while it is open there;
-  Ctrl/Alt/Super combinations still reach the popup. Esc, or 60 s without a key, gives the keyboard back.
+  Ctrl/Alt/Super combinations still reach the popup, except Ctrl+Space (hide/show the panel), which vimvibe takes. Esc, or 60 s without a key, gives the keyboard back.
+- Restarting a Chromium-based app (to turn its accessibility on) is a normal quit and relaunch; unsaved text in
+  forms can be lost, and PWAs or apps started from a terminal get the flag only through that restart, not the launcher fix.
 - Elements an app doesn't expose to accessibility (custom-drawn canvases, some image views) get no label.
 - Title-bar button labels are placed from the KWin button layout; with an unusual decoration theme they may sit a few
   pixels off (pressing them is exact: it runs the KWin action, not a click).

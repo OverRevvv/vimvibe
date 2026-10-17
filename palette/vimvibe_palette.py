@@ -23,7 +23,10 @@ window on the target's screen holds a search panel, and every element of the tar
   tap Alt                  clear the search, show all labels  Ctrl+R       re-read the window
   Ctrl+,  (anywhere: Ctrl+Shift+,)  Settings                  Esc          close (also ends continuous mode)
   Ctrl+Space               hide / show the search panel (labels stay)
-All of these (except the Space+H J K L scrolling family) can be rebound in Settings → Keys ([keys] in config.toml);
+  Ctrl+G                   mouse grid: type a cell's two letters to zoom in, Enter clicks the middle, Space only moves there,
+                           Backspace zooms out, Ctrl+Shift+G window/screen, Esc back to the search
+  Ctrl+M                   mouse movement: hold H J K L to move the pointer (Shift faster, Alt precise), Enter clicks
+All of these (except the Space+H J K L scrolling family and the mouse movement keys) can be rebound in Settings → Keys ([keys] in config.toml);
 the ones above are the defaults.
 Mouse: click a label or a row to activate it, click anywhere else to close, wheel moves the selection.
 
@@ -33,21 +36,23 @@ Mouse: click a label or a row to activate it, click anywhere else to close, whee
 
 All settings live in ~/.config/vimvibe/config.toml (see README.md); --accent and $VIMVIBE_ACCENT override the colour.
 """
-import argparse, json, os, sys, time
+import argparse, json, math, os, sys, time
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusPendingCallWatcher, QDBusServiceWatcher
 from PySide6.QtGui import QColor, QFontMetricsF, QIcon, QGuiApplication, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QWidget
 
 from vimvibe_keys import KeyMap, iv
-from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, read_config, write_config
+from vimvibe_mouse import Grid
+from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, number, read_config, write_config
 
 # the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
 SERVICE, PATH, IFACE = "org.vimvibe.Daemon" + PROFILE.capitalize(), "/org/vimvibe/Daemon", "org.vimvibe.Daemon"
 DEBUG = bool(os.environ.get("VIMVIBE_DEBUG"))
 PAD = 14
 GG_S = 0.5          # the second g of "gg" must come within this many seconds
+MOVE_TICK_MS = 16   # pointer movement (H J K L) updates this often
 TAP_MS = 350        # a modifier released within this time, with no other key, counts as a tap
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
@@ -135,9 +140,18 @@ class Overlay(QWidget):
         self.space_down = False   # Space is held: H J K L scroll instead of typing
         self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
         self.scrolling = False
+        self.refreshing = False   # after scrolling: the window is being re-read, so nothing stale is drawn meanwhile
         self.last_g = 0.0         # time of the last "g" while Space is held (gg = top)
         self.arrowing = False     # arrow mode: the overlay is hidden and the daemon turns H J K L into arrow keys
         self.panel_override = None  # the panel toggle key: True/False forces it shown/hidden, None = the default rule
+        self.mouse = None         # keyboard mouse: None, "grid" (zooming grid) or "move" (H J K L moves the pointer)
+        self.grid = None
+        self.grid_scope = "window"
+        self.held = []            # pointer movement: direction keys held now, as (dx, dy)
+        self.move_mods = 0        # modifiers last seen (Shift = fast, Alt = precise)
+        self.move_since = self.move_last = 0.0
+        self.move_rem = [0.0, 0.0]
+        self.move_timer = QTimer(self, interval=MOVE_TICK_MS, timeout=self.move_tick)
         self.edit = QLineEdit(self)
         self.default_placeholder = "Search for elements, or type a label"
         self.edit.setFrame(False)
@@ -182,6 +196,8 @@ class Overlay(QWidget):
         """Daemon signal: a snapshot is ready. Fetch the elements, lay out labels and panel, and show the overlay."""
         self.load_settings()  # settings apply on the next open, no restart
         self.space_down = self.space_used = self.arrowing = self.scrolling = False  # a fresh open ends any key mode
+        self.leave_mouse()
+        was_refresh, self.refreshing = self.refreshing, False
         self.meta = json.loads(payload)
         self.panel_override = False if self.cfg["ui"].get("start_hidden") else None
         self.sync_field()
@@ -193,13 +209,23 @@ class Overlay(QWidget):
         self.set_placeholder()
         self.query("")
         self.place_panel()
-        if self.passive:
+        if self.isVisible():  # re-read after scrolling: already on screen, don't show it again (KWin would animate it)
+            self.update()
+        elif self.passive:
             self.show()  # layer surface anchored to every edge; no activation, the popup keeps the keyboard
         else:
             self.showFullScreen()
             self.raise_()
             self.activateWindow()
+        if not self.passive:
             self.edit.setFocus()
+        if was_refresh:
+            if not self.cfg["hints"].get("after_input"):
+                self.reveal_labels()  # the labels pop in at once, no delay
+            return
+        if self.cfg["mouse"].get("open_in") == "grid":
+            self.grid_scope = self.cfg["mouse"].get("scope", "window")
+            self.enter_grid()
         if not self.cfg["hints"].get("after_input"):
             self.show_labels_timer.start(max(0, int(self.cfg["hints"].get("delay_ms", 0))))
         if DEBUG:
@@ -213,12 +239,17 @@ class Overlay(QWidget):
         """Daemon signal: the snapshot was dropped; hide."""
         self.show_labels_timer.stop()
         self.end_scroll(refresh=False)
+        self.leave_mouse()
         self.hide()
 
     @Slot(str)
     def refused(self, payload):
         """Daemon signal: it could not open (excluded app, unreadable window); tell the user why."""
         meta = json.loads(payload)
+        self.refreshing = False
+        if meta.get("restart"):
+            QTimer.singleShot(0, lambda: self.offer_restart(meta["restart"]))
+            return
         if meta.get("excluded"):
             notify("vimvibe is off for this app", f"Excluded by the rule “{meta['excluded']}” in your vimvibe settings.")
         elif meta.get("unsupported"):
@@ -226,10 +257,36 @@ class Overlay(QWidget):
         else:
             notify("vimvibe can't read this window", meta.get("error", ""))
 
+    def offer_restart(self, app):
+        """A Chromium-based app (Chrome, Brave, Edge, an Electron app) was started without accessibility, so vimvibe sees
+        nothing in it and nothing can change that from outside: offer to restart it with the flag (tabs come back)."""
+        name = app.get("app") or "This app"
+        box = QMessageBox(QMessageBox.Question, "vimvibe",
+                          f"{name} isn't sharing its page with vimvibe yet.",
+                          QMessageBox.NoButton)
+        box.setInformativeText(f"Browsers built on Chromium only do that when they are started with accessibility on. "
+                               f"Restart {name} now with it? Your tabs come back, and vimvibe makes {name} start this way "
+                               f"from the menu from now on.")
+        yes = box.addButton("Restart it", QMessageBox.AcceptRole)
+        box.addButton("Not now", QMessageBox.RejectRole)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        res = self.call("RestartWithAccessibility", int(app["pid"]))
+        if res and res.get("ok"):
+            notify(f"{name} restarted", "Press the vimvibe shortcut again once it is back.")
+        else:
+            notify(f"vimvibe could not restart {name}", (res or {}).get("error", "the daemon did not answer"))
+
     def on_key(self, payload):
         """A key typed over a popup (passive mode): the daemon consumed it before the popup saw it."""
         k = json.loads(payload)
         name = k.get("name", "")
+        if k.get("ctrl"):  # the daemon only reports Ctrl+Space here: the hide / show key (if it is still bound)
+            if name == "space" and self.keymap.match(Qt.Key_Space, Qt.ControlModifier) == "toggle_panel":
+                self.toggle_panel()
+            return
         if name in ("Return", "KP_Enter"):
             self.act("click")
         elif name == "BackSpace":
@@ -442,6 +499,7 @@ class Overlay(QWidget):
         """Close without acting (Esc, click outside)."""
         self.show_labels_timer.stop()
         self.end_scroll(refresh=False)
+        self.leave_mouse()
         self.hide()
         self.daemon.call("Close")
 
@@ -480,7 +538,19 @@ class Overlay(QWidget):
         if self.windowHandle():
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
         if refresh:
+            # the old labels are wrong once the content has moved: draw nothing until the new ones arrive, then show
+            # them all at once (never the stale ones, never a staggered fade-in)
+            self.refreshing = True
+            self.labels_on = False
+            self.update()
+            QTimer.singleShot(4000, self.stop_refreshing)
             self.daemon.asyncCall("Refresh")
+
+    def stop_refreshing(self):
+        """Safety net: the re-read never answered (window closed, error), so draw normally again."""
+        if self.refreshing:
+            self.refreshing = False
+            self.update()
 
     def scroll_key(self, k, shift, direction=None):
         """Space + D / U (or a given `direction`): scroll; Shift scrolls four times as far."""
@@ -560,12 +630,160 @@ class Overlay(QWidget):
             self.arrowing = False
             notify("vimvibe can't send arrow keys here", res.get("error", "the daemon did not answer"))
 
+    # --- keyboard mouse: zooming grid and H J K L pointer movement -----------------------
+    def mouse_enabled(self):
+        """The mouse features are on in Settings, and this overlay can take keys (a passive one over a popup can't)."""
+        return bool(self.cfg["mouse"].get("enabled", True)) and not self.passive
+
+    def enter_grid(self):
+        """Show the grid over the target window (or the whole screen, per the scope) and start taking its keys."""
+        if not self.mouse_enabled() or self.origin is None:
+            return
+        self.stop_move()
+        mc = self.cfg["mouse"]
+        screen = QRectF(self.rect())
+        bounds, o = screen, self.meta.get("origin")
+        if self.grid_scope == "window" and o and o[2] > 0:
+            win = QRectF(o[0] - self.origin[0], o[1] - self.origin[1], o[2], o[3]).intersected(screen)
+            if win.width() >= 60 and win.height() >= 60:
+                bounds = win
+        self.grid = Grid((bounds.x(), bounds.y(), bounds.width(), bounds.height()),
+                         number(mc.get("cols"), 5, 2, 26), number(mc.get("rows"), 5, 2, 26),
+                         str(mc.get("alphabet", "")), number(mc.get("max_depth"), 4, 1, 10))
+        self.mouse = "grid"
+        self.update()
+
+    def enter_move(self):
+        """H J K L pointer movement, starting from where the pointer is (or the grid's centre when coming from the grid).
+        The overlay stops taking pointer input so what is under the pointer reacts (hover) as it moves."""
+        if not self.mouse_enabled():
+            return
+        if self.grid:
+            cx, cy = self.grid.center()
+            res = self.call("PointerAct", cx + self.origin[0], cy + self.origin[1], False, "goto")
+        else:
+            res = self.call("PointerMotion", 0.0, 0.0)  # checks the permission before the mode starts
+        if not res or not res.get("ok"):
+            notify("vimvibe can't move the pointer", (res or {}).get("error", "the daemon did not answer"))
+            return
+        self.grid = None
+        self.mouse = "move"
+        self.held, self.move_rem = [], [0.0, 0.0]
+        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.update()
+
+    def stop_move(self):
+        """Stop moving the pointer (keys released, mode left)."""
+        self.move_timer.stop()
+        self.held = []
+
+    def leave_mouse(self):
+        """Back to the search (Esc in the grid / movement mode), or the end of the mouse mode when the overlay closes."""
+        if self.mouse is None:
+            return
+        self.stop_move()
+        self.mouse, self.grid = None, None
+        if self.windowHandle():
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+        self.update()
+
+    def mouse_commit(self, action):
+        """Click (or just leave the pointer) at the grid's centre, or where H J K L put it. Closes the overlay."""
+        if self.mouse == "grid":
+            cx, cy = self.grid.center()
+            where = (cx + self.origin[0], cy + self.origin[1], False)
+        else:
+            where = (0.0, 0.0, True)
+        self.leave_mouse()
+        self.hide()
+        QTimer.singleShot(60, lambda: self.mouse_done(self.call("PointerAct", *where, action)))
+
+    def mouse_done(self, res):
+        """Answer to PointerAct: tell the user when it failed (no permission, feature off)."""
+        if res and not res.get("ok"):
+            print("pointer action failed:", res.get("error"), file=sys.stderr, flush=True)
+            notify("vimvibe could not use the pointer", res.get("error", ""))
+
+    def move_tick(self):
+        """Every few ms while a direction key is held: send the distance travelled since the last tick (whole pixels,
+        the remainder carries over). Speed grows the longer the key is held; Shift is faster, Alt precise."""
+        now = time.monotonic()
+        dt, self.move_last = min(now - self.move_last, 0.05), now
+        dx, dy = sum(d[0] for d in self.held), sum(d[1] for d in self.held)
+        if not (dx or dy):
+            return
+        mc = self.cfg["mouse"]
+        speed = number(mc.get("speed"), 500, 50, 6000)
+        if mc.get("accelerate", True):
+            speed *= 1 + 3 * min(1.0, (now - self.move_since) / 0.8)
+        if self.move_mods & iv(Qt.ShiftModifier):
+            speed *= number(mc.get("fast"), 3, 1, 20)
+        elif self.move_mods & iv(Qt.AltModifier):
+            speed *= 0.25
+        n = math.hypot(dx, dy)
+        self.move_rem[0] += dx / n * speed * dt
+        self.move_rem[1] += dy / n * speed * dt
+        ix, iy = int(self.move_rem[0]), int(self.move_rem[1])
+        self.move_rem[0] -= ix
+        self.move_rem[1] -= iy
+        if ix or iy:
+            self.send("PointerMotion", float(ix), float(iy))
+
+    def mouse_event(self, ev):
+        """A key event while the grid or pointer movement is active. Everything is consumed here, so nothing leaks into
+        the search field; Esc goes back to the search."""
+        k, t = iv(ev.key()), ev.type()
+        self.move_mods = iv(ev.modifiers())
+        if k in (iv(Qt.Key_Control), iv(Qt.Key_Alt), iv(Qt.Key_Shift), iv(Qt.Key_Meta)):
+            return True
+        direction = SCROLL_KEYS.get(self.cfg["mouse"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k)
+        if t == QEvent.KeyRelease:
+            if self.mouse == "move" and direction in self.held and not ev.isAutoRepeat():
+                self.held.remove(direction)
+                if not self.held:
+                    self.move_timer.stop()
+            return True
+        action = self.keymap.match(ev.key(), ev.modifiers())
+        click = {"click": "click", "right_click": "right", "double_click": "double", "middle_click": "middle"}.get(action)
+        if action == "close":
+            self.leave_mouse()
+        elif action == "mouse_grid":
+            self.leave_mouse() if self.mouse == "grid" else self.enter_grid()
+        elif action == "mouse_move":
+            self.leave_mouse() if self.mouse == "move" else self.enter_move()
+        elif action == "mouse_place":
+            self.mouse_commit("move")
+        elif click:
+            self.mouse_commit(click)
+        elif self.mouse == "grid":
+            if action == "mouse_back":
+                if self.grid.back():
+                    self.update()
+            elif action == "mouse_scope":
+                self.grid_scope = "screen" if self.grid_scope == "window" else "window"
+                self.enter_grid()
+            elif len(ev.text()) == 1 and not iv(ev.modifiers()) & (iv(Qt.ControlModifier) | iv(Qt.AltModifier) | iv(Qt.MetaModifier)):
+                if self.grid.type(ev.text()):
+                    self.update()
+        elif direction and not ev.isAutoRepeat():  # movement: the direction is held until its key is released
+            if direction not in self.held:
+                if not self.held:
+                    self.move_since = self.move_last = time.monotonic()
+                self.held.append(direction)
+            self.move_timer.start()
+        return True
+
     def eventFilter(self, obj, ev):
         """Keys typed into the search field: Esc, Enter variants, Ctrl+digit, navigation, Space-scrolling, Settings,
         and modifier taps."""
         if obj is not self.edit:
             return super().eventFilter(obj, ev)
+        # Order matters: keyboard-mouse mode swallows everything first; then modifier-only presses (for taps); then
+        # rebindable actions, Space handling (a held Space turns H J K L into scrolling), result rows, and finally
+        # the key release side (end of Space / end of a modifier tap).
         t = ev.type()
+        if self.mouse and t in (QEvent.KeyPress, QEvent.KeyRelease):
+            return self.mouse_event(ev)
         if t == QEvent.KeyPress:
             k, mods = ev.key(), ev.modifiers()
             ctrl, alt, shift = bool(mods & Qt.ControlModifier), bool(mods & Qt.AltModifier), bool(mods & Qt.ShiftModifier)
@@ -575,6 +793,10 @@ class Overlay(QWidget):
                 return False
             self.tap = {}  # another key: the modifier was used as a modifier, not tapped
             action = self.keymap.match(k, mods)
+            if action in ("mouse_grid", "mouse_move"):
+                if not ev.isAutoRepeat():
+                    self.enter_grid() if action == "mouse_grid" else self.enter_move()
+                return True
             if action == "toggle_panel":  # before Space handling: the default is Ctrl+Space
                 if not ev.isAutoRepeat():
                     self.toggle_panel()
@@ -644,6 +866,10 @@ class Overlay(QWidget):
         """Click on a row or a label activates it (right button: right click); anywhere else closes."""
         p = ev.position()
         right = ev.button() == Qt.RightButton
+        if self.mouse == "grid":  # click a cell to zoom into it, right click zooms out
+            if (self.grid.back() if right else self.grid.zoom_to((p.x(), p.y()))):
+                self.update()
+            return
         if self.panel_shown():
             for i in range(min(self.t.rows, len(self.hits) - self.top)):
                 if self.row_rect(i).contains(p):
@@ -677,10 +903,18 @@ class Overlay(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        if self.t.dim and not self.scrolling:
+        if self.t.dim and not self.scrolling and self.mouse is None:
             p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * self.t.dim / 100)))
         if self.scrolling:
             self.paint_scroll_banner(p)
+            return
+        if self.refreshing:
+            return
+        if self.mouse == "grid":
+            self.paint_grid(p)
+            return
+        if self.mouse == "move":
+            self.banner(p, self.move_text(), None)
             return
         self.paint_selected(p)
         self.paint_labels(p)
@@ -690,14 +924,73 @@ class Overlay(QWidget):
     def paint_scroll_banner(self, p):
         """While scrolling: a small banner instead of labels and panel (they would be stale)."""
         edge = " · G G top · Shift+G bottom" if self.cfg["scroll"].get("edge_keys", True) else ""
-        text = f"Scrolling — hold Space, {' '.join(self.cfg['scroll'].get('keys', 'hjkl').upper())} or D / U (Shift: faster){edge} · release Space for new labels"
+        self.banner(p, f"Scrolling — hold Space, {' '.join(self.cfg['scroll'].get('keys', 'hjkl').upper())} or D / U (Shift: faster){edge} · release Space for new labels", None)
+
+    def key_text(self, *parts):
+        """Banner text from (action, what it does) pairs, skipping the unbound ones: "[Enter] click · [Esc] back"."""
+        return " · ".join(f"[{self.keymap.label(a)}] {what}" for a, what in parts if self.keymap.label(a))
+
+    def move_text(self):
+        """Banner for move mode: the configured movement keys plus the rebindable click/grid/back keys."""
+        keys = " ".join(self.cfg["mouse"].get("keys", "hjkl").upper())
+        return f"Mouse — [{keys}] move · [Shift] faster · [Alt] precise · " + self.key_text(
+            ("click", "click"), ("right_click", "right click"), ("mouse_place", "stay here"), ("mouse_grid", "grid"), ("close", "back"))
+
+    def grid_text(self):
+        """Banner for grid mode; the hint depends on whether another zoom level exists and which scope Ctrl+Shift+G switches to."""
+        g = self.grid
+        zoom = "type a cell's two letters" if g.can_zoom() else "deepest level"
+        scope = "screen" if self.grid_scope == "window" else "window"
+        return f"Grid — {zoom} · " + self.key_text(
+            ("mouse_back", "zoom out"), ("click", "click"), ("right_click", "right click"), ("mouse_place", "stay here"),
+            ("mouse_move", "H J K L"), ("mouse_scope", scope), ("close", "back"))
+
+    def banner(self, p, text, avoid):
+        """A one-line message in a pill at the top of the screen (the bottom when `avoid` would be covered)."""
         p.setFont(self.t.small_font)
-        w = QFontMetricsF(self.t.small_font).horizontalAdvance(text) + 32
+        w = min(self.width() - 40, QFontMetricsF(self.t.small_font).horizontalAdvance(text) + 32)
         r = QRectF((self.width() - w) / 2, 24, w, 34)
+        if avoid is not None and r.intersects(avoid):
+            r.moveBottom(self.height() - 24)
         path = QPainterPath(); path.addRoundedRect(r, 10, 10)
         p.fillPath(path, self.t.panel_bg)
         p.setPen(QPen(self.t.accent, 2)); p.drawPath(path)
         p.setPen(self.t.panel_text); p.drawText(r, Qt.AlignCenter, text)
+
+    def paint_grid(self, p):
+        """The mouse grid: everything outside the region dimmed, the region divided into labelled cells (after the first
+        letter only that row keeps its labels), a cross at the middle where the pointer will go."""
+        g, t = self.grid, self.t
+        x, y, w, h = g.region
+        region = QRectF(x, y, w, h)
+        outside = QPainterPath(); outside.addRect(QRectF(self.rect()))
+        inner = QPainterPath(); inner.addRect(region)
+        p.fillPath(outside.subtracted(inner), QColor(0, 0, 0, 120))
+        tint = QColor(t.accent); tint.setAlpha(28)
+        p.fillRect(region, tint)
+        line = QColor(t.accent); line.setAlpha(190)
+        p.setPen(QPen(line, 1))
+        for c in range(1, g.cols):
+            p.drawLine(QPointF(x + w * c / g.cols, y), QPointF(x + w * c / g.cols, y + h))
+        for r in range(1, g.rows):
+            p.drawLine(QPointF(x, y + h * r / g.rows), QPointF(x + w, y + h * r / g.rows))
+        p.setPen(QPen(t.accent, 2)); p.setBrush(Qt.NoBrush); p.drawRect(region)
+        cx, cy = g.center()
+        arm = min(14.0, w / 2, h / 2)
+        for pen in (QPen(QColor(0, 0, 0, 200), 4), QPen(QColor(255, 255, 255), 2)):
+            p.setPen(pen)
+            p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy)); p.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+        if g.can_zoom():
+            for r in range(g.rows):
+                for c in range(g.cols):
+                    label = g.label(r, c)
+                    if g.pending and not label.startswith(g.pending):
+                        continue
+                    lw, lh = t.label_size(label)
+                    cell = QRectF(*g.cell(r, c))
+                    if cell.width() >= lw + 4 and cell.height() >= lh + 2:
+                        t.draw_label(p, QRectF(cell.center().x() - lw / 2, cell.center().y() - lh / 2, lw, lh), label, len(g.pending))
+        self.banner(p, self.grid_text(), region)
 
     def paint_selected(self, p):
         """Filled highlight around the selected result's element."""
@@ -723,6 +1016,7 @@ class Overlay(QWidget):
 
     def paint_panel(self, p):
         """Draw the search panel: field frame, hint line, result rows (name, role, label, Ctrl+n) and footer."""
+        # layout, top to bottom: rounded panel -> search field frame -> hint line -> result rows -> footer line
         t = self.t
         pr = QRectF(self.panel); pr.setHeight(self.panel_height(min(t.rows, len(self.hits))))
         p.setBrush(Qt.NoBrush)
@@ -742,6 +1036,8 @@ class Overlay(QWidget):
             hint += [f"[Space+{keys}] scroll", f"[Space+Ctrl+{keys}] arrows"]
             if km.label("toggle_panel"):
                 hint.append(f"[{km.label('toggle_panel')}] hide panel")
+            if self.mouse_enabled() and km.label("mouse_grid"):
+                hint.append(f"[{km.label('mouse_grid')}] mouse grid")
             if km.label("settings"):
                 hint.append(f"[{km.label('settings')}] settings")
             p.drawText(QRectF(pr.x() + PAD + 4, pr.y() + PAD + 44, pr.width() - 2 * PAD, 22), Qt.AlignVCenter,
@@ -755,6 +1051,7 @@ class Overlay(QWidget):
             if idx == self.sel:
                 sp = QPainterPath(); sp.addRoundedRect(rr.adjusted(0, 1, 0, -1), 7, 7)
                 c = QColor(t.selected); c.setAlpha(75); p.fillPath(sp, c)
+            # right to left inside a row: Ctrl+n key caps, then the letter label, then the role, then the name
             kh = rr.height() - 12
             nr = QRectF(rr.right() - 28, rr.y() + 6, 24, kh)
             cr = QRectF(nr.x() - 28, nr.y(), 24, kh)

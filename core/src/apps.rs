@@ -147,6 +147,7 @@ fn which(bin: &str) -> bool {
 mod tests {
     use super::*;
 
+    // Desktop entries are parsed (name, exec, categories) and hidden/OnlyShowIn ones are filtered out.
     #[test]
     fn parses_and_filters() {
         let dir = std::env::temp_dir().join(format!("vv-apps-{}", std::process::id()));
