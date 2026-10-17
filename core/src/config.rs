@@ -24,11 +24,17 @@ pub struct Scroll {
     /// What Space + H/J/K/L do: "scroll" (default) or "arrows" (send arrow keys; needs the keyboard permission).
     /// The other action is on Space + Ctrl + H/J/K/L.
     pub hjkl: String,
-    /// Wheel clicks per press.
-    pub step: i32,
-    /// Spread a scroll over `smooth_ms` instead of jumping (a smooth, eased animation).
+    /// Distance per press, in mouse-wheel notches (1 notch ≈ 3 lines).
+    pub distance: f64,
+    /// Glide through a scroll like a smooth-scrolling mouse wheel instead of jumping; `smooth_ms` is how long a glide
+    /// takes to settle.
     pub smooth: bool,
     pub smooth_ms: u64,
+    /// Space + g g jumps to the top and Space + Shift+G to the bottom (like Vimium).
+    pub edge_keys: bool,
+    /// How far (notches) and how fast (ms) a jump to the top/bottom travels; the app stops at the end of the content.
+    pub edge_notches: f64,
+    pub edge_ms: u64,
     /// Natural scrolling: down moves the content up, like a touchpad.
     pub natural: bool,
     /// Swap left and right for H / L.
@@ -38,9 +44,9 @@ pub struct Scroll {
 }
 
 impl Default for Scroll {
-    /// Vim keys scroll; 5 clicks per press, smooth over 140 ms, Shift = 4× — what felt right in testing.
+    /// Vim keys scroll; one notch per press gliding for 220 ms, Shift = 4×, gg / G jump over 600 ms.
     fn default() -> Self {
-        Scroll { keys: "hjkl".into(), hjkl: "scroll".into(), step: 5, smooth: true, smooth_ms: 140, natural: false, invert_horizontal: false, fast: 4 }
+        Scroll { keys: "hjkl".into(), hjkl: "scroll".into(), distance: 1.0, smooth: true, smooth_ms: 220, edge_keys: true, edge_notches: 600.0, edge_ms: 600, natural: false, invert_horizontal: false, fast: 4 }
     }
 }
 

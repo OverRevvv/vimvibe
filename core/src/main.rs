@@ -11,6 +11,7 @@ pub(crate) mod matcher;
 mod model;
 mod pointer;
 mod popups;
+mod scroller;
 
 use atspi::connection::{AccessibilityConnection, read_session_accessibility, set_session_accessibility};
 use clap::{Parser, Subcommand};
@@ -83,6 +84,14 @@ enum Cmd {
     /// Each argument is an X keysym name (a letter, digit, `space`, `Down`, ...) or a hex keysym like `0xff54`;
     /// `+name` only presses, `-name` only releases.
     Key { keys: Vec<String> },
+    /// Testing: send smooth scroll events where the pointer is: `scroll-px 0 60 --steps 30` sends 30 events of 2 units
+    /// (1 unit = 1/10 wheel notch), 8 ms apart, then a finish event. Negative values need `--`: `scroll-px -- 0 -60`.
+    ScrollPx {
+        dx: f64,
+        dy: f64,
+        #[arg(long, default_value_t = 30)]
+        steps: u32,
+    },
     /// Click at screen coordinates through the portal (needs `pointer-setup` first).
     Click {
         x: f64,
@@ -176,6 +185,17 @@ async fn main() -> anyhow::Result<()> {
             println!("arrow keys for you (tick the keyboard as well as the pointer for arrow keys).");
             let p = pointer::Pointer::connect(true).await?;
             println!("granted: pointer{}; token saved to {}", if p.has_keyboard() { " and keyboard" } else { " only (no arrow keys)" }, pointer::token_path().display());
+            p.close().await;
+            return Ok(());
+        }
+        Cmd::ScrollPx { dx, dy, steps } => {
+            let p = pointer::Pointer::connect(false).await?;
+            for _ in 0..steps {
+                p.axis(dx / steps as f64, dy / steps as f64, false).await?;
+                tokio::time::sleep(Duration::from_millis(8)).await;
+            }
+            p.axis(0.0, 0.0, true).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             p.close().await;
             return Ok(());
         }

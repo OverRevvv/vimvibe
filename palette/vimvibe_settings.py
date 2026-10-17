@@ -8,13 +8,14 @@ own: label/flag theme (colours, font, sizes), panel look, excluded apps, accessi
 """
 import json, os, shutil, subprocess
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialogButtonBox, QDoubleSpinBox, QFontComboBox,
+from PySide6.QtWidgets import (QGridLayout, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFontComboBox,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
                                QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
+import vimvibe_keys as keys
 from vimvibe_style import CONFIG, PRESETS, PROFILE, Theme, icon_path
 
 DELAYS = [("Immediately", 0), ("After 200 ms", 200), ("After 500 ms", 500), ("After 1 second", 1000),
@@ -126,6 +127,39 @@ class Preview(QWidget):
             p.setFont(t.key_font); p.setPen(t.key_fg); p.drawText(r_, Qt.AlignCenter, s)
 
 
+class KeyCapture(QDialog):
+    """"Press the new key": a small modal dialog that records the next key combination (Esc cancels)."""
+
+    def __init__(self, parent, title):
+        super().__init__(parent)
+        self.setWindowTitle("New key")
+        self.result_text = None
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel(f"<b>{title}</b><br>Press the key combination you want, e.g. Ctrl+Space.<br>"
+                           "<small>Esc cancels (the Reset button brings Esc back for “Close”).</small>", textFormat=Qt.RichText))
+        self.shown = QLabel("…"); self.shown.setAlignment(Qt.AlignCenter)
+        f = self.shown.font(); f.setPointSizeF(f.pointSizeF() * 1.6); f.setBold(True); self.shown.setFont(f)
+        v.addWidget(self.shown)
+        b = QDialogButtonBox(QDialogButtonBox.Cancel); b.rejected.connect(self.reject)
+        v.addWidget(b)
+
+    def event(self, ev):
+        """Take every key press (Tab and the like would otherwise move focus); modifiers alone only show."""
+        if ev.type() == QEvent.ShortcutOverride:
+            ev.accept(); return True
+        if ev.type() == QEvent.KeyPress:
+            k, mods = ev.key(), ev.modifiers()
+            if keys.iv(k) in keys.MOD_KEYS:
+                self.shown.setText(keys.format_mods(keys.iv(mods) & keys.MOD_MASK) + "+…")
+                return True
+            if k == Qt.Key_Escape and not keys.iv(mods) & keys.MOD_MASK:
+                self.reject(); return True
+            key, m = keys.canon(k, mods)
+            self.result_text = keys.format_key(key, m)
+            self.accept(); return True
+        return super().event(ev)
+
+
 class SettingsWindow(QWidget):
     def __init__(self, read_config, write_config, defaults):
         """Build the tabs and load the current settings into them."""
@@ -140,6 +174,7 @@ class SettingsWindow(QWidget):
         tabs.addTab(self.general_tab(), "General")
         tabs.addTab(self.appearance_tab(), "Appearance")
         tabs.addTab(self.labels_tab(), "Labels && behaviour")
+        tabs.addTab(self.keys_tab(), "Keys")
         tabs.addTab(self.apps_tab(), "Excluded apps")
         tabs.addTab(self.system_tab(), "Accessibility && setup")
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
@@ -247,6 +282,8 @@ class SettingsWindow(QWidget):
         pf.addRow("", self.hint_line)
         self.hide_panel = QCheckBox("Hide the panel until I type (labels only at first, like Shortcat's option)")
         pf.addRow("", self.hide_panel)
+        self.start_hidden = QCheckBox("Open with the panel hidden (the “hide / show panel” key brings it back — see Keys)")
+        pf.addRow("", self.start_hidden)
         self.dim = QSlider(Qt.Horizontal); self.dim.setRange(0, 60)
         pf.addRow("Darken the screen behind:", self.dim)
         v.addWidget(panel)
@@ -280,27 +317,127 @@ class SettingsWindow(QWidget):
         self.scroll_keys.addItem("H J K L (Vim: left, down, up, right)", "hjkl")
         self.scroll_keys.addItem("I J K L (arrow layout: up, left, down, right)", "ijkl")
         sf.addRow("Direction keys:", self.scroll_keys)
-        self.scroll_step = QSpinBox(); self.scroll_step.setRange(1, 40); self.scroll_step.setSuffix(" wheel clicks per press")
+        self.scroll_step = QDoubleSpinBox(); self.scroll_step.setRange(0.1, 20.0); self.scroll_step.setSingleStep(0.1)
+        self.scroll_step.setDecimals(1); self.scroll_step.setSuffix(" mouse-wheel notches per press")
         sf.addRow("Scroll distance:", self.scroll_step)
         self.scroll_fast = QSpinBox(); self.scroll_fast.setRange(1, 20); self.scroll_fast.setPrefix("×")
         sf.addRow("With Shift held:", self.scroll_fast)
-        self.scroll_smooth = QCheckBox("Smooth animation (ease the scroll instead of jumping)")
+        self.scroll_smooth = QCheckBox("Smooth scrolling (glide like a smooth-scrolling mouse wheel; held keys flow into one motion)")
         sf.addRow("Animation:", self.scroll_smooth)
         self.scroll_smooth_ms = QSpinBox(); self.scroll_smooth_ms.setRange(20, 1000); self.scroll_smooth_ms.setSingleStep(20)
-        self.scroll_smooth_ms.setSuffix(" ms per press")
+        self.scroll_smooth_ms.setSuffix(" ms to settle")
         self.scroll_smooth.toggled.connect(self.scroll_smooth_ms.setEnabled)
-        sf.addRow("Animation length:", self.scroll_smooth_ms)
+        sf.addRow("Glide length:", self.scroll_smooth_ms)
+        self.edge_keys = QCheckBox("Space + g g jumps to the top, Space + Shift+G to the bottom (like Vimium)")
+        sf.addRow("Top / bottom:", self.edge_keys)
+        self.edge_notches = QSpinBox(); self.edge_notches.setRange(10, 5000); self.edge_notches.setSingleStep(50)
+        self.edge_notches.setSuffix(" notches")
+        sf.addRow("Jump distance:", self.edge_notches)
+        self.edge_ms = QSpinBox(); self.edge_ms.setRange(150, 3000); self.edge_ms.setSingleStep(50); self.edge_ms.setSuffix(" ms")
+        sf.addRow("Jump time:", self.edge_ms)
+        self.edge_keys.toggled.connect(self.edge_notches.setEnabled)
+        self.edge_keys.toggled.connect(self.edge_ms.setEnabled)
         self.scroll_natural = QCheckBox("Natural direction (like a touchpad: the content follows your finger)")
         sf.addRow("Direction:", self.scroll_natural)
         self.scroll_invert_h = QCheckBox("Swap left and right (H scrolls right, L scrolls left)")
         sf.addRow("", self.scroll_invert_h)
-        sf.addRow("", QLabel("<small><b>Space + D / U</b> always scroll down / up. <b>Space + H J K L</b> scroll (or send "
+        sf.addRow("", QLabel("<small><b>Space + D / U</b> always scroll down / up; <b>Space + g g</b> and <b>Space + Shift+G</b> jump to the top and bottom. <b>Space + H J K L</b> scroll (or send "
                              "arrow keys, per the first option); hold <b>Ctrl</b> to get the other one. Release Space "
                              "for fresh labels; Esc stops. Scrolling works in every app and needs the pointer "
                              "permission; arrow keys need the keyboard permission and work in KDE/Qt and GTK 3 apps "
                              "(Accessibility &amp; setup tab).</small>", textFormat=Qt.RichText, wordWrap=True))
         f.addRow(box)
         return w
+
+    def keys_tab(self):
+        """Every key the overlay reacts to, with Change / Add / Reset per action."""
+        self.key_values = {}   # action -> list of binding strings (what is shown and saved)
+        self.key_widgets = {}  # action -> (text label or combo)
+        w = QWidget(); v = QVBoxLayout(w)
+        head = QLabel("Keys used while the overlay is open. Click <b>Change</b> and press the combination you want; "
+                      "<b>Add</b> gives an action a second key. The defaults are what vimvibe ships with. The global "
+                      "shortcuts that open vimvibe from anywhere (<b>Meta+Shift+Space</b>, quit, settings) are KDE "
+                      "shortcuts: <a href='kcm'>change them in System Settings</a>.", textFormat=Qt.RichText, wordWrap=True)
+        head.linkActivated.connect(lambda _: self.run_detached(["systemsettings", "kcm_keys"]))
+        v.addWidget(head)
+        inner = QWidget(); grid = QGridLayout(inner)
+        for row, (action, title, default, kind) in enumerate(keys.ACTIONS):
+            grid.addWidget(QLabel(title), row, 0)
+            if kind == "key":
+                shown = QLabel(); shown.setTextFormat(Qt.RichText); shown.setMinimumWidth(190)
+                self.key_widgets[action] = shown
+                change, add, reset = QPushButton("Change…"), QPushButton("Add…"), QPushButton("Reset")
+                change.clicked.connect(lambda _=False, a=action: self.capture_key(a, replace=True))
+                add.clicked.connect(lambda _=False, a=action: self.capture_key(a, replace=False))
+                reset.clicked.connect(lambda _=False, a=action: self.set_binding(a, list(keys.DEFAULTS[a])))
+                grid.addWidget(shown, row, 1)
+                for col, b in enumerate((change, add, reset)):
+                    grid.addWidget(b, row, 2 + col)
+            else:
+                combo = QComboBox()
+                choices = ["Ctrl", "Alt", "Ctrl+Shift", "Ctrl+Alt", "Alt+Shift"] if kind == "mods" else ["", "Ctrl", "Alt", "Shift"]
+                for c in choices:
+                    combo.addItem(c or "Off", c)
+                combo.activated.connect(lambda _=0, a=action, c=combo: self.set_binding(a, [c.currentData()] if c.currentData() else []))
+                self.key_widgets[action] = combo
+                grid.addWidget(combo, row, 1)
+                reset = QPushButton("Reset"); reset.clicked.connect(lambda _=False, a=action: self.set_binding(a, list(keys.DEFAULTS[a])))
+                grid.addWidget(reset, row, 4)
+        grid.setColumnStretch(1, 1)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(inner)
+        v.addWidget(scroll, 1)
+        self.key_warning = QLabel(); self.key_warning.setWordWrap(True); self.key_warning.setTextFormat(Qt.RichText)
+        v.addWidget(self.key_warning)
+        v.addWidget(QLabel("<small>Space + H J K L / D / U (scrolling and arrow keys) are set in <i>Labels &amp; behaviour</i>: "
+                           "they follow physical key positions, so they work the same on any keyboard layout. Over start-menu "
+                           "and other popups vimvibe cannot see Ctrl/Alt combinations, so the popup keys there stay as "
+                           "they are.</small>", textFormat=Qt.RichText, wordWrap=True))
+        return w
+
+    def set_binding(self, action, values):
+        """Store the bindings of one action and refresh its row."""
+        self.key_values[action] = values
+        self.show_bindings()
+
+    def capture_key(self, action, replace):
+        """Ask for a key combination and bind it to `action` (warning about clashes and keys that would stop typing)."""
+        dlg = KeyCapture(self, keys.TITLE[action])
+        if dlg.exec() != QDialog.Accepted or not dlg.result_text:
+            return
+        text = dlg.result_text
+        key, mods = keys.parse_key(text)
+        if keys.is_plain_text_key(key, mods) and QMessageBox.question(
+                self, "vimvibe", f"“{text}” is a typing key: while the overlay is open you could no longer type it into the "
+                "search field. Use it anyway?") != QMessageBox.Yes:
+            return
+        for other, vals in self.key_values.items():
+            if other != action and keys.KIND[other] == "key" and any(keys.parse_key(v) == (key, mods) for v in vals):
+                if QMessageBox.question(self, "vimvibe", f"“{text}” is already used for “{keys.TITLE[other]}”. "
+                                        "Take it over (it is removed from there)?") != QMessageBox.Yes:
+                    return
+                self.key_values[other] = [v for v in vals if keys.parse_key(v) != (key, mods)]
+        have = [] if replace else [v for v in self.key_values.get(action, []) if keys.parse_key(v) != (key, mods)]
+        self.set_binding(action, have + [text])
+
+    def show_bindings(self):
+        """Redraw every row from `key_values`, and list any problems (unreadable or doubly used keys)."""
+        for action, widget in self.key_widgets.items():
+            vals = self.key_values.get(action, [])
+            changed = vals != keys.DEFAULTS[action]
+            if isinstance(widget, QComboBox):
+                i = widget.findData(vals[0] if vals else "")
+                if i < 0:
+                    widget.addItem(vals[0], vals[0]); i = widget.count() - 1
+                widget.setCurrentIndex(i)
+            else:
+                text = "  /  ".join(f"<b>{v.replace('&', '&amp;').replace('<', '&lt;')}</b>" for v in vals) or "<i>not bound</i>"
+                widget.setText(text + ("  <small>(changed)</small>" if changed else ""))
+        notes = []
+        km = keys.KeyMap(self.key_values)
+        notes += [f"⚠ {p}" for p in km.problems]
+        for (k, m), actions in keys.conflicts(self.key_values).items():
+            notes.append(f"⚠ {keys.format_key(k, m)} is used for: " + ", ".join(keys.TITLE[a] for a in actions))
+        self.key_warning.setText("<br>".join(notes))
 
     def apps_tab(self):
         """The list of apps vimvibe must never touch."""
@@ -409,7 +546,10 @@ class SettingsWindow(QWidget):
         self.panel.setCurrentIndex(max(0, self.panel.findData(ui["panel"])))
         self.hint_line.setChecked(bool(ui["hint_line"]))
         self.hide_panel.setChecked(bool(ui["hide_panel_until_typing"]))
+        self.start_hidden.setChecked(bool(ui.get("start_hidden", False)))
         self.dim.setValue(int(ui["dim"]))
+        self.key_values = {a: keys.effective(cfg.get("keys"), a) for a in keys.DEFAULTS}
+        self.show_bindings()
         delay = -1 if hints.get("after_input") else int(hints.get("delay_ms", 0))
         i = self.delay.findData(delay)
         if i < 0:
@@ -420,10 +560,14 @@ class SettingsWindow(QWidget):
         self.cdelay.setValue(int(beh.get("continuous_delay_ms", 500)))
         self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
         self.hjkl_action.setCurrentIndex(max(0, self.hjkl_action.findData(scroll.get("hjkl", "scroll"))))
-        self.scroll_step.setValue(int(scroll.get("step", 5)))
+        self.scroll_step.setValue(float(scroll.get("distance", 1.0)))
         self.scroll_fast.setValue(int(scroll.get("fast", 4)))
         self.scroll_smooth.setChecked(bool(scroll.get("smooth", True)))
-        self.scroll_smooth_ms.setValue(int(scroll.get("smooth_ms", 140)))
+        self.scroll_smooth_ms.setValue(int(scroll.get("smooth_ms", 220)))
+        self.edge_keys.setChecked(bool(scroll.get("edge_keys", True)))
+        self.edge_notches.setValue(int(scroll.get("edge_notches", 600)))
+        self.edge_ms.setValue(int(scroll.get("edge_ms", 600)))
+        self.edge_notches.setEnabled(self.edge_keys.isChecked()); self.edge_ms.setEnabled(self.edge_keys.isChecked())
         self.scroll_smooth_ms.setEnabled(self.scroll_smooth.isChecked())
         self.scroll_natural.setChecked(bool(scroll.get("natural", False)))
         self.scroll_invert_h.setChecked(bool(scroll.get("invert_horizontal", False)))
@@ -449,11 +593,15 @@ class SettingsWindow(QWidget):
             panel_theme=self.panel_theme.currentData(), panel_opacity=round(self.opacity.value() / 100, 2),
             panel_width=self.panel_width.value(), rows=self.rows.value(), panel_font_size=self.panel_font_size.value(),
             panel=self.panel.currentData(), hint_line=self.hint_line.isChecked(),
-            hide_panel_until_typing=self.hide_panel.isChecked(), dim=self.dim.value())
+            hide_panel_until_typing=self.hide_panel.isChecked(), start_hidden=self.start_hidden.isChecked(),
+            dim=self.dim.value())
+        # only what differs from the defaults is written, so later releases can improve the defaults
+        cfg["keys"] = {a: v for a, v in self.key_values.items() if v != keys.DEFAULTS[a]}
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
         cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value())
-        cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), step=self.scroll_step.value(),
+        cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), distance=round(self.scroll_step.value(), 1),
                              fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
+                             edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),
                              natural=self.scroll_natural.isChecked(), invert_horizontal=self.scroll_invert_h.isChecked())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]

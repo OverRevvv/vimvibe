@@ -16,12 +16,15 @@ window on the target's screen holds a search panel, and every element of the tar
   Ctrl+1..9                act on row n                       Ctrl+Shift+1..9  select row n
   ↑ ↓ / Tab / Ctrl+N Ctrl+P  move the selection               PageUp / PageDown  by a page
   hold Space + H J K L     scroll left / down / up / right (the selected element, or the window); Shift = faster
-  hold Space + D / U       scroll down / up
+  hold Space + D / U       scroll down / up                   Space + g g / Shift+G   jump to the top / bottom
   hold Space+Ctrl + H J K L  arrow keys in the app (needs keyboard permission; the first press only switches the mode
                            on, keep Space held and use H J K L); Settings can swap the two actions
   release Space            vimvibe comes back with fresh labels
   tap Alt                  clear the search, show all labels  Ctrl+R       re-read the window
   Ctrl+,  (anywhere: Ctrl+Shift+,)  Settings                  Esc          close (also ends continuous mode)
+  Ctrl+Space               hide / show the search panel (labels stay)
+All of these (except the Space+H J K L scrolling family) can be rebound in Settings → Keys ([keys] in config.toml);
+the ones above are the defaults.
 Mouse: click a label or a row to activate it, click anywhere else to close, wheel moves the selection.
 
   vimvibe_palette.py                 run the overlay (keep it running; it waits for the shortcut)
@@ -30,19 +33,21 @@ Mouse: click a label or a row to activate it, click anywhere else to close, whee
 
 All settings live in ~/.config/vimvibe/config.toml (see README.md); --accent and $VIMVIBE_ACCENT override the colour.
 """
-import argparse, json, os, sys
+import argparse, json, os, sys, time
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusPendingCallWatcher, QDBusServiceWatcher
 from PySide6.QtGui import QColor, QFontMetricsF, QIcon, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
+from vimvibe_keys import KeyMap, iv
 from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, read_config, write_config
 
 # the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
 SERVICE, PATH, IFACE = "org.vimvibe.Daemon" + PROFILE.capitalize(), "/org/vimvibe/Daemon", "org.vimvibe.Daemon"
 DEBUG = bool(os.environ.get("VIMVIBE_DEBUG"))
 PAD = 14
+GG_S = 0.5          # the second g of "gg" must come within this many seconds
 TAP_MS = 350        # a modifier released within this time, with no other key, counts as a tap
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
@@ -130,7 +135,9 @@ class Overlay(QWidget):
         self.space_down = False   # Space is held: H J K L scroll instead of typing
         self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
         self.scrolling = False
+        self.last_g = 0.0         # time of the last "g" while Space is held (gg = top)
         self.arrowing = False     # arrow mode: the overlay is hidden and the daemon turns H J K L into arrow keys
+        self.panel_override = None  # the panel toggle key: True/False forces it shown/hidden, None = the default rule
         self.edit = QLineEdit(self)
         self.default_placeholder = "Search for elements, or type a label"
         self.edit.setFrame(False)
@@ -150,8 +157,11 @@ class Overlay(QWidget):
         """Re-read config.toml and rebuild the theme (colours, fonts, sizes) and the search field's look."""
         self.cfg = read_config()
         self.t = Theme(self.cfg, self.accent_override)
+        self.keymap = KeyMap(self.cfg.get("keys"))
+        for problem in self.keymap.problems:
+            print("keys:", problem, file=sys.stderr, flush=True)
         self.edit.setFont(self.t.field_font)
-        self.edit.setStyleSheet(f"background: transparent; color: {self.t.panel_text.name()};")
+        self.sync_field()
 
     def send(self, method, *args):
         """Fire-and-forget D-Bus call to the daemon (PySide's asyncCall takes no arguments, hence the list form)."""
@@ -173,6 +183,8 @@ class Overlay(QWidget):
         self.load_settings()  # settings apply on the next open, no restart
         self.space_down = self.space_used = self.arrowing = self.scrolling = False  # a fresh open ends any key mode
         self.meta = json.loads(payload)
+        self.panel_override = False if self.cfg["ui"].get("start_hidden") else None
+        self.sync_field()
         self.place_screen()
         self.elements = (self.call("Elements") or {}).get("elements", [])
         self.layout_labels()
@@ -246,7 +258,7 @@ class Overlay(QWidget):
 
     def set_placeholder(self):
         """Search field placeholder; empty while the panel is hidden until typing (nothing should float on screen)."""
-        if self.t.hide_panel_until_typing:
+        if self.t.hide_panel_until_typing or not self.panel_shown():
             self.edit.setPlaceholderText("")
         else:
             self.edit.setPlaceholderText("Search applications and windows" if self.meta.get("launcher") else self.default_placeholder)
@@ -315,7 +327,21 @@ class Overlay(QWidget):
 
     def panel_shown(self):
         """Whether the panel is drawn now (hidden until typing, when that is set)."""
+        if self.panel_override is not None:
+            return self.panel_override
         return not (self.t.hide_panel_until_typing and not self.edit.text())
+
+    def toggle_panel(self):
+        """The hide/show key: hide the search panel (labels and typing keep working) or bring it back."""
+        self.panel_override = not self.panel_shown()
+        self.sync_field()
+        self.update()
+
+    def sync_field(self):
+        """The search field is a real widget over the panel: make its text invisible while the panel is hidden."""
+        color = self.t.panel_text.name() if self.panel_shown() else "transparent"
+        self.edit.setStyleSheet(f"background: transparent; color: {color};")
+        self.set_placeholder()
 
     def place_panel(self, keep_if_clear=False):
         """Put the panel where it hides the fewest labels: above, at the top, middle or bottom of, beside, or below the
@@ -362,6 +388,7 @@ class Overlay(QWidget):
     # --- behaviour ---------------------------------------------------------
     def query(self, text):
         """Search field changed: ask the daemon for hits, keep the panel clear of the selection, maybe auto-activate."""
+        self.sync_field()
         res = self.call("Search", text) or {}
         self.hits = res.get("hits", [])
         self.sel, self.top = 0, 0
@@ -462,16 +489,36 @@ class Overlay(QWidget):
             return False
         if not self.scrolling and not self.start_scroll():
             return True
-        step = max(1, int(self.cfg["scroll"].get("step", 5))) * (max(1, int(self.cfg["scroll"].get("fast", 4))) if shift else 1)
+        sc = self.cfg["scroll"]
+        # distance is in wheel notches; the daemon takes tenths of a notch and glides through them
+        step = round(max(0.1, float(sc.get("distance", 1.0))) * 10 * (max(1, int(sc.get("fast", 4))) if shift else 1))
         self.send("Scroll", dx * step, dy * step)
         return True
 
-    def space_chord(self, k, ctrl, alt, shift):
-        """A key pressed while Space is held. D / U scroll. H J K L (or I J K L) do what [scroll] hjkl says — scroll by
+    def edge_key(self, direction):
+        """Space + g g (top, -1) / Space + Shift+G (bottom, 1): one long glide that the app stops at the end of its content."""
+        if not self.scrolling and not self.start_scroll():
+            return True
+        self.send("ScrollEdge", direction)
+        return True
+
+    def space_chord(self, k, ctrl, alt, shift, repeat=False):
+        """A key pressed while Space is held. D / U scroll; g g and Shift+G jump to the top and bottom (like Vimium). H J K L (or I J K L) do what [scroll] hjkl says — scroll by
         default, arrow keys when set to "arrows" — and Ctrl swaps to the other action (Alt always means arrow keys, as
         a modifier for them). Returns whether the key was used."""
         if k in SCROLL_LETTERS and not ctrl and not alt:
             return self.scroll_key(k, shift)
+        if k == Qt.Key_G and not ctrl and not alt and self.cfg["scroll"].get("edge_keys", True):
+            if repeat:
+                return True
+            if shift:
+                return self.edge_key(1)
+            now = time.monotonic()
+            if now - self.last_g < GG_S:
+                self.last_g = 0.0
+                return self.edge_key(-1)
+            self.last_g = now
+            return True
         direction = SCROLL_KEYS.get(self.cfg["scroll"].get("keys", "hjkl"), SCROLL_KEYS["hjkl"]).get(k)
         if not direction:
             return False
@@ -522,45 +569,45 @@ class Overlay(QWidget):
         if t == QEvent.KeyPress:
             k, mods = ev.key(), ev.modifiers()
             ctrl, alt, shift = bool(mods & Qt.ControlModifier), bool(mods & Qt.AltModifier), bool(mods & Qt.ShiftModifier)
-            if k in (Qt.Key_Control, Qt.Key_Alt):
+            if iv(k) in (iv(Qt.Key_Control), iv(Qt.Key_Alt), iv(Qt.Key_Shift)):
                 if not ev.isAutoRepeat():
-                    self.tap = {k: ev.timestamp()}
+                    self.tap = {iv(k): ev.timestamp()} if self.keymap.tapped_action(k) else {}
                 return False
             self.tap = {}  # another key: the modifier was used as a modifier, not tapped
+            action = self.keymap.match(k, mods)
+            if action == "toggle_panel":  # before Space handling: the default is Ctrl+Space
+                if not ev.isAutoRepeat():
+                    self.toggle_panel()
+                return True
             if k == Qt.Key_Space and not alt:
                 if not ev.isAutoRepeat():
                     self.space_down, self.space_used = True, False
                 return True  # typed on release, unless it was used to scroll
             if self.space_down:
-                if self.space_chord(k, ctrl, alt, shift):
+                if self.space_chord(k, ctrl, alt, shift, ev.isAutoRepeat()):
                     self.space_used = True
                     return True
-            if k == Qt.Key_Escape:
-                self.dismiss(); return True
-            if ctrl and k in (Qt.Key_Comma, Qt.Key_Less):
-                self.dismiss()
-                if self.on_settings:
-                    self.on_settings()
-                return True
-            if k in (Qt.Key_Return, Qt.Key_Enter):
-                self.act("right" if ctrl else "double" if alt else "middle" if shift else "click"); return True
-            digit = {Qt.Key_1 + i: i for i in range(9)}
-            digit.update({Qt.Key_Exclam: 0, Qt.Key_At: 1, Qt.Key_NumberSign: 2, Qt.Key_Dollar: 3, Qt.Key_Percent: 4,
-                          Qt.Key_AsciiCircum: 5, Qt.Key_Ampersand: 6, Qt.Key_Asterisk: 7, Qt.Key_ParenLeft: 8})
-            if ctrl and k in digit:
-                row = self.top + digit[k]
+            if isinstance(action, tuple):  # a result row: Ctrl+1..9 acts on it, Ctrl+Shift+1..9 only selects it
+                row = self.top + action[1]
                 if row < len(self.hits):
-                    if shift:
+                    if action[0] == "row_select":
                         self.move_sel(0, absolute=row)
                     else:
                         self.act("click", row=row)
                 return True
-            if ctrl and k == Qt.Key_R:
+            if action == "close":
+                self.dismiss(); return True
+            if action == "settings":
+                self.dismiss()
+                if self.on_settings:
+                    self.on_settings()
+                return True
+            click = {"click": "click", "right_click": "right", "double_click": "double", "middle_click": "middle"}.get(action)
+            if click:
+                self.act(click); return True
+            if action == "refresh":
                 self.daemon.asyncCall("Refresh"); return True
-            step = {Qt.Key_Down: 1, Qt.Key_Tab: 1, Qt.Key_Up: -1, Qt.Key_Backtab: -1,
-                    Qt.Key_PageDown: self.t.rows, Qt.Key_PageUp: -self.t.rows}.get(k)
-            if ctrl and k == Qt.Key_N: step = 1
-            if ctrl and k == Qt.Key_P: step = -1
+            step = {"next": 1, "prev": -1, "page_down": self.t.rows, "page_up": -self.t.rows}.get(action)
             if step:
                 self.move_sel(step); return True
         elif t == QEvent.KeyRelease and ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
@@ -575,13 +622,14 @@ class Overlay(QWidget):
                 else:
                     self.edit.insert(" ")
             return True
-        elif t == QEvent.KeyRelease and ev.key() in (Qt.Key_Control, Qt.Key_Alt) and not ev.isAutoRepeat():
-            k = ev.key()
+        elif t == QEvent.KeyRelease and iv(ev.key()) in (iv(Qt.Key_Control), iv(Qt.Key_Alt), iv(Qt.Key_Shift)) and not ev.isAutoRepeat():
+            k = iv(ev.key())
             pressed = self.tap.pop(k, None)
             if pressed is not None and ev.timestamp() - pressed <= TAP_MS:
-                if k == Qt.Key_Alt:
+                tapped = self.keymap.tapped_action(k)
+                if tapped == "tap_labels":
                     self.show_all_labels()
-                elif self.hits:
+                elif tapped == "tap_hover" and self.hits:
                     self.ctrl_taps += 1  # wait briefly: a second tap means "focus" instead of "hover"
                     self.ctrl_timer.start(TAP_MS)
         return super().eventFilter(obj, ev)
@@ -641,7 +689,8 @@ class Overlay(QWidget):
 
     def paint_scroll_banner(self, p):
         """While scrolling: a small banner instead of labels and panel (they would be stale)."""
-        text = f"Scrolling — hold Space, {' '.join(self.cfg['scroll'].get('keys', 'hjkl').upper())} or D / U (Shift: faster) · release Space for new labels"
+        edge = " · G G top · Shift+G bottom" if self.cfg["scroll"].get("edge_keys", True) else ""
+        text = f"Scrolling — hold Space, {' '.join(self.cfg['scroll'].get('keys', 'hjkl').upper())} or D / U (Shift: faster){edge} · release Space for new labels"
         p.setFont(self.t.small_font)
         w = QFontMetricsF(self.t.small_font).horizontalAdvance(text) + 32
         r = QRectF((self.width() - w) / 2, 24, w, 34)
@@ -686,9 +735,17 @@ class Overlay(QWidget):
         p.setPen(QPen(t.accent, 2)); p.drawPath(fp)
         if t.hint_line:
             p.setFont(t.small_font); p.setPen(t.panel_dim)
-            keys = self.cfg["scroll"].get("keys", "hjkl").upper()
+            keys, km = self.cfg["scroll"].get("keys", "hjkl").upper(), self.keymap
+            hint = [f"[{km.label('click') or 'Enter'}] click"]
+            if km.label("tap_labels"):
+                hint.append(f"tap [{km.label('tap_labels')}] all labels")
+            hint += [f"[Space+{keys}] scroll", f"[Space+Ctrl+{keys}] arrows"]
+            if km.label("toggle_panel"):
+                hint.append(f"[{km.label('toggle_panel')}] hide panel")
+            if km.label("settings"):
+                hint.append(f"[{km.label('settings')}] settings")
             p.drawText(QRectF(pr.x() + PAD + 4, pr.y() + PAD + 44, pr.width() - 2 * PAD, 22), Qt.AlignVCenter,
-                       f"[Enter] click · tap [Alt] all labels · [Space+{keys}] scroll · [Space+Ctrl+{keys}] arrows · [Ctrl+,] settings")
+                       QFontMetricsF(t.small_font).elidedText(" · ".join(hint), Qt.ElideRight, int(pr.width() - 2 * PAD - 8)))
         fm = QFontMetricsF(t.row_font)
         sfm = QFontMetricsF(t.small_font)
         for i in range(min(t.rows, len(self.hits) - self.top)):

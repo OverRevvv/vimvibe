@@ -23,6 +23,7 @@ inside each split terminal; the panel lists the matches with their labels and Ct
 - [Using it](#using-it)
 - [Settings](#settings)
 - [Scrolling and arrow keys](#scrolling-and-arrow-keys)
+- [Customizing keys](#customizing-keys)
 - [Excluding apps](#excluding-apps)
 - [Making apps visible](#making-apps-visible-accessibility)
 - [Troubleshooting](#troubleshooting)
@@ -113,6 +114,7 @@ you want Space + H/J/K/L arrow keys).
 | Give it keyboard focus (e.g. a text field) | **tap Ctrl twice** |
 | Act on result row *n* / just select it | **Ctrl+1…9** / **Ctrl+Shift+1…9** |
 | Move the selection | **↑ ↓**, **Tab / Shift+Tab**, **Ctrl+N / Ctrl+P**, **PageUp / PageDown**, mouse wheel |
+| Hide / show the search panel (labels stay) | **Ctrl+Space** ([rebind it](#customizing-keys)) |
 | Clear the search, show every label again | **tap Alt** |
 | Re-read the window (after the page changed) | **Ctrl+R** |
 | Switch to another window | type its app or title (e.g. `konsole`) → **Enter** |
@@ -140,6 +142,7 @@ Open the Settings window with **Ctrl+Shift+,** (or `vimvibe settings`). It has a
 | General | shortcuts (changed in System Settings), launch at login, window switching, app launching, panel labels |
 | Appearance | theme presets (Blue, Shortcat, Nord, Dracula, Gruvbox, Solarized light, High contrast); label background, text, outline and selected colours; font; label text size; overall label size; corner radius; capitals; panel style (dark/light), opacity, width, result rows, text size, position, key-hint line, hide-until-typing; screen dimming |
 | Labels & behaviour | when labels appear (immediately … 5 s, after input), Vimium-style auto-click, continuous mode, and the scrolling group: what Space+HJKL does, direction keys, distance, Shift multiplier, smooth animation and its length, natural direction, swap left/right |
+| Keys | every key the overlay uses, with Change / Add / Reset per action, and conflict warnings |
 | Excluded apps | apps vimvibe must never read or click |
 | Accessibility & setup | setup check, turn accessibility on, keep it on after login, allow pointer and keyboard control |
 
@@ -163,6 +166,7 @@ rows = 9                   # result rows shown (Ctrl+1..9 reach the first nine)
 panel_font_size = 0        # points; 0 = automatic
 hint_line = true
 hide_panel_until_typing = false   # labels only until you type (Shortcat's "hide query pane")
+start_hidden = false       # open with the panel hidden; the toggle_panel key (Ctrl+Space) shows it
 dim = 0                    # darken the screen behind the labels, percent 0–60
 
 [hints]
@@ -174,13 +178,19 @@ auto_activate = false      # true: a fully typed label clicks at once (Vimium-st
 continuous = false         # come back after each click
 continuous_delay_ms = 500
 
+[keys]                     # only what you changed is written; see "Customizing keys"
+toggle_panel = ["Ctrl+Space"]
+
 [scroll]
 keys = "hjkl"              # direction keys: "hjkl" (Vim) or "ijkl"
 hjkl = "scroll"            # Space + H J K L: "scroll" or "arrows" (Space + Ctrl + key does the other one)
-step = 5                   # wheel clicks per press
+distance = 1.0             # mouse-wheel notches per press (about 3 lines)
 fast = 4                   # Shift multiplies the distance by this
-smooth = true              # ease the scroll over smooth_ms instead of jumping
-smooth_ms = 140
+smooth = true              # glide like a smooth-scrolling mouse wheel instead of jumping
+smooth_ms = 220            # how long a glide takes to settle
+edge_keys = true           # Space + g g = top, Space + Shift+G = bottom
+edge_notches = 600.0       # how far a jump to top/bottom travels (the app stops at the end)
+edge_ms = 600              # how long that jump takes
 natural = false            # touchpad-style direction
 invert_horizontal = false  # swap left and right for H / L
 
@@ -224,15 +234,16 @@ config):
 |---|---|
 | Space + H J K L | **Scroll** (default) or **Arrow keys**; Ctrl swaps to the other one |
 | Direction keys | H J K L (Vim) or I J K L (I up, K down, J left, L right) |
-| Scroll distance | wheel clicks per press (default 5) |
+| Scroll distance | mouse-wheel notches per press (default 1; about 3 lines) |
 | With Shift held | the multiplier (default ×4) |
-| Smooth animation / length | the clicks of one press are spread over this time with an ease-out curve instead of arriving at once (default on, 140 ms) |
+| Smooth scrolling / glide length | each press adds to a smooth glide (a critically damped spring: gentle start, no overshoot, 220 ms to settle by default). A held key flows into one continuous motion, like a smooth-scrolling mouse wheel; with it off, a press jumps |
+| Top / bottom (`gg`, `G`) | **Space + g g** scrolls to the top and **Space + Shift+G** to the bottom, like Vimium (on by default); the jump distance and time are settable. It is one long glide of `edge_notches` that the app stops at the end of its content, so a page longer than that needs a second press. Not available in arrow mode (Space + Ctrl + keys) |
 | Natural direction | touchpad-style: the content follows your finger |
 | Swap left and right | if H should scroll right and L left |
 
 ### How scrolling works
 
-Real mouse-wheel steps sent through the desktop's Remote Control permission, so it works in every app, accessible or
+Smooth scroll events (about 125 a second, fractions of a wheel notch each) sent through the desktop's Remote Control permission, so it works in every app, accessible or
 not; while you scroll, the overlay lets the wheel events through to the app below. No modifier keys are used on
 purpose (Shortcat uses Space + Cmd): on Linux apps give the wheel another meaning when one is held — Ctrl + wheel
 zooms (Dolphin then does not scroll at all), Shift + wheel scrolls sideways, Alt + wheel is "back" in some browsers.
@@ -261,6 +272,38 @@ Your desktop shows its *Remote Control* dialog once: allow **pointer** (clicks, 
 **keyboard** (only used for the arrow keys). KDE remembers the answer; vimvibe never opens the dialog on its own.
 `vimvibe doctor` shows what is allowed. (Scrolling needs the pointer part only.) Revoke it any time in **System Settings → Security & Privacy → Remote
 Control**, or delete `~/.local/state/vimvibe/pointer-token`.
+
+## Customizing keys
+
+Every key the overlay reacts to can be changed in **Settings → Keys**: click *Change…* and press the combination you
+want, *Add…* gives an action a second key, *Reset* restores its default. The window warns when two actions share a
+key, and before you bind a plain typing key (it would stop typing that character into the search field). The same is
+possible by hand in `[keys]`; a value is a string or a list, and an empty list unbinds the action:
+
+```toml
+[keys]
+toggle_panel = ["Ctrl+Space"]          # hide / show the search panel (labels and typing keep working)
+click = ["Return", "Enter"]
+right_click = ["Ctrl+Return"]
+double_click = ["Alt+Return"]
+middle_click = ["Shift+Return"]
+close = ["Escape"]
+settings = ["Ctrl+,", "Ctrl+Shift+,"]
+refresh = ["Ctrl+R"]
+next = ["Down", "Tab", "Ctrl+N"]
+prev = ["Up", "Shift+Tab", "Ctrl+P"]
+page_down = ["PgDown"]
+page_up = ["PgUp"]
+row_act = ["Ctrl"]                     # + 1…9: act on that result row
+row_select = ["Ctrl+Shift"]            # + 1…9: only select it
+tap_labels = ["Alt"]                   # tap alone: clear the search, show every label (Ctrl, Alt, Shift or [] = off)
+tap_hover = ["Ctrl"]                   # tap alone: hover (twice: focus)
+```
+
+Limits: the global shortcuts that open and quit vimvibe are KDE shortcuts (System Settings → Shortcuts → *vimvibe*,
+linked from the Keys tab). Space + H J K L / D / U follow physical key positions (they are also read by the daemon);
+choose between the Vim and the arrow layout in *Labels & behaviour*. Over the start menu and other popups vimvibe can't
+see Ctrl/Alt combinations, so the keys there keep their defaults.
 
 ## Excluding apps
 
@@ -300,7 +343,7 @@ Accessibility is a session setting that is off by default on most distributions;
 | "pointer control is not set up" | run `vimvibe-core pointer-setup` once and approve the dialog |
 | "Arrow keys need keyboard permission" | run `vimvibe-core pointer-setup` again and allow the keyboard too |
 | "can't send arrow keys here" | the app (Chrome/Electron, GTK 4) doesn't share key presses with accessibility: scroll with Space + J / K instead |
-| Scrolling does nothing | hold **Space** and press **J / K / H / L** or **D / U** — no Ctrl (apps treat Ctrl+wheel as zoom); it needs the pointer permission (`vimvibe doctor`); some views move only a little per step — raise *Scroll distance* in Settings |
+| Scrolling does nothing | hold **Space** and press **J / K / H / L** or **D / U** — no Ctrl (apps treat Ctrl+wheel as zoom); it needs the pointer permission (`vimvibe doctor`); some views move only a little per step — raise *Scroll distance* in Settings; a press moves one wheel notch by default |
 | Space + J types arrow keys into my terminal | *Settings → Space + H J K L* is set to "Arrow keys"; set it to "Scroll" (the default) |
 | Want to stop vimvibe from clicking or typing arrow keys | System Settings → Security & Privacy → Remote Control, or delete `~/.local/state/vimvibe/pointer-token` |
 | Logs | `vimvibe logs` (`~/.local/state/vimvibe/`) |
@@ -407,7 +450,7 @@ core/                Rust: AT-SPI reading, matching, labels, KWin bridge, daemon
   src/doctor.rs      setup check
 packaging/icons/     the icon: vimvibe.svg (edit this) and the generated PNG sizes (`python3 packaging/icons/make-icons.py`)
 palette/             Python/Qt: overlay (vimvibe_palette.py), Settings window (vimvibe_settings.py),
-                     shared config + theme (vimvibe_style.py)
+                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py)
 packaging/           launcher script, optional systemd user unit
 research/            design notes and measurements (start with 09, 10, 11)
 ```
@@ -423,7 +466,7 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `Elements() → json` | every element with id, label, role, screen rectangle |
 | `Activate(i)` / `ActivateId(id)` / `ActivateWith(id, action)` | act on a hit / an element; action = `click right double middle hover focus` |
 | `Refresh()` | re-read the same window |
-| `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEnd()` | park the pointer over element `id` (or the window), scroll by wheel clicks, put it back |
+| `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEdge(dir)`, `ScrollEnd()` | park the pointer over element `id` (or the window), glide by `dx`/`dy` tenths of a wheel notch (returns at once; the glide carries on), jump to the top (`dir` -1) or bottom (1), put the pointer back after the glide |
 | `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-key mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |
 | signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()`, `Key(json)`, `OpenSettings()` | |
@@ -449,7 +492,7 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 | Launch applications | ✅ (installed apps; also from the start menu) |
 | Window title-bar buttons | ✅ (close, maximize, minimize, window menu, all desktops) |
 | Menu bar / app menu search, Dock | ⏳ planned ([research/11](research/11-os-scope-plan.md)) |
-| Space+Cmd+HJKL scroll | ✅ as Space + HJKL / D / U (no modifier: Ctrl+wheel is zoom on Linux), smooth animation and distance settings, in every app |
+| Space+Cmd+HJKL scroll | ✅ as Space + HJKL / D / U (no modifier: Ctrl+wheel is zoom on Linux), smooth glide and distance settings, plus `gg` / `G` for top and bottom, in every app |
 | Space+HJKL arrow keys (IJKL option, keycode-based) | ✅ as Space + Ctrl + HJKL in KDE/Qt and GTK 3 apps, with the desktop's keyboard permission (swappable in Settings) |
 | Preferences window (Cmd+,) | ✅ Ctrl+Shift+, anywhere, Ctrl+, in the overlay; plus label/panel theming Shortcat doesn't offer |
 | Hide query pane by default | ✅ `hide_panel_until_typing` |

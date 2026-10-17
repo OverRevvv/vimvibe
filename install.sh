@@ -43,6 +43,7 @@ install -Dm755 "$TARGET/release/vimvibe-core" "$BIN/vimvibe-core"
 install -Dm644 palette/vimvibe_palette.py "$SHARE/vimvibe_palette.py"
 install -Dm644 palette/vimvibe_settings.py "$SHARE/vimvibe_settings.py"
 install -Dm644 palette/vimvibe_style.py "$SHARE/vimvibe_style.py"
+install -Dm644 palette/vimvibe_keys.py "$SHARE/vimvibe_keys.py"
 install -Dm644 packaging/icons/vimvibe.svg "$SHARE/vimvibe.svg"   # for the overlay's and Settings' window icon
 sed -e "s|@CORE@|$BIN/vimvibe-core|" -e "s|@PALETTE_DIR@|$SHARE|" packaging/vimvibe > "$BIN/vimvibe"
 chmod 755 "$BIN/vimvibe"

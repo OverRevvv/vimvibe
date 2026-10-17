@@ -48,20 +48,27 @@ DEFAULTS = {
         "hint_line": True,          # show the key hint line under the search field
         "hide_panel_until_typing": False,  # labels only until you type (Shortcat's "hide query pane")
         "dim": 0,                   # darken the screen behind the labels, percent 0–60
+        "start_hidden": False,      # open with the search panel hidden (the hide/show key brings it back)
     },
     "hints": {"delay_ms": 0, "after_input": False, "auto_activate": False},
     "behavior": {"continuous": False, "continuous_delay_ms": 500},
     "scroll": {
         "keys": "hjkl",              # layout of the direction keys: hjkl (Vim) or ijkl
         "hjkl": "scroll",            # Space + H/J/K/L: "scroll" or "arrows" (Space + Ctrl + H/J/K/L does the other)
-        "step": 5,                   # wheel clicks per press
+        "distance": 1.0,             # mouse-wheel notches per press (1 notch is about 3 lines)
         "fast": 4,                   # Shift multiplies the distance by this
-        "smooth": True,              # ease the scroll over smooth_ms instead of jumping
-        "smooth_ms": 140,
+        "smooth": True,              # glide through the scroll like a smooth-scrolling mouse wheel instead of jumping
+        "smooth_ms": 220,            # how long a glide takes to settle
+        "edge_keys": True,           # Space + g g = top, Space + Shift+G = bottom
+        "edge_notches": 600.0,       # how far a jump to top/bottom travels; the app stops at the end
+        "edge_ms": 600,              # how long that jump takes
         "natural": False,            # touchpad-style direction
         "invert_horizontal": False,  # swap left and right for H / L
     },
     "search": {"windows": True, "apps": True, "panel": True},
+    # key bindings: action -> "Ctrl+Space" or a list; absent = the default in vimvibe_keys.py (the table starts empty so
+    # that only what the user changed is written, and later releases can improve the defaults)
+    "keys": {},
     "apps": {"exclude": []},
 }
 

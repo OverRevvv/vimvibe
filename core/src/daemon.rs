@@ -10,7 +10,7 @@
 //!   ActivateId(id) -> json  activate element `id` (from Elements/Search), then close the snapshot
 //!   ActivateWith(id, action) -> json  same with action click | right | double | middle | hover | focus
 //!   Refresh() -> json     re-read the same window (emits Opened again)
-//!   ScrollStart(id), Scroll(dx, dy), ScrollEnd()   scroll the element `id` (or the window) with wheel clicks
+//!   ScrollStart(id), Scroll(dx, dy), ScrollEdge(dir), ScrollEnd()   scroll the element `id` (or the window): smooth glide in tenths of a wheel notch; ScrollEdge jumps to the top (-1) / bottom (1)
 //!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
 //! Apps listed under [apps] exclude in ~/.config/vimvibe/config.toml are never read: Trigger emits Refused instead
 //! (also emitted, with only `error`, when the focused window cannot be read).
@@ -133,6 +133,8 @@ struct Shared {
     keys: Arc<crate::keygrab::State>,
     /// While scrolling: where the pointer was before we parked it over the scroll target (restored at the end).
     scroll_origin: Mutex<Option<(f64, f64)>>,
+    /// The smooth-scroll engine (scroller.rs); `scroll_task` sends what it produces.
+    scroller: crate::scroller::Scroller,
 }
 
 struct Daemon(Arc<Shared>);
@@ -264,22 +266,32 @@ impl Daemon {
         }
     }
 
-    /// Scroll by wheel clicks where `ScrollStart` parked the pointer: `dy` > 0 down, `dx` > 0 right. Natural
-    /// scrolling, swapped left/right and smooth easing come from the settings.
+    /// Scroll where `ScrollStart` parked the pointer: `dy` > 0 down, `dx` > 0 right, in tenths of a wheel notch. The
+    /// distance is added to a smooth glide that carries on after this returns (repeats merge into one continuous
+    /// motion). Natural scrolling, swapped left/right and the glide's length come from the settings.
     async fn scroll(&self, dx: i32, dy: i32) -> String {
-        let guard = self.0.pointer.lock().await;
-        match guard.as_ref() {
-            Some(p) => match do_scroll(p, dx, dy).await {
-                Ok(()) => json!({"ok": true}),
-                Err(e) => json!({"ok": false, "error": e.to_string()}),
-            },
-            None => json!({"ok": false, "error": "call ScrollStart first"}),
+        if self.0.pointer.lock().await.is_none() {
+            return json!({"ok": false, "error": "call ScrollStart first"}).to_string();
         }
-        .to_string()
+        queue_scroll(&self.0, dx as f64, dy as f64);
+        json!({"ok": true}).to_string()
     }
 
-    /// Stop scrolling: put the pointer back where it was before `ScrollStart`.
+    /// Scroll to the top (`dir` < 0) or the bottom (`dir` > 0) of what is under the pointer: a long, fast glide of
+    /// `edge_notches` that the app stops at the end of its content. Same pointer rules as `Scroll`.
+    async fn scroll_edge(&self, dir: i32) -> String {
+        if self.0.pointer.lock().await.is_none() {
+            return json!({"ok": false, "error": "call ScrollStart first"}).to_string();
+        }
+        let c = config::load().scroll;
+        let notches = c.edge_notches.clamp(10.0, 5000.0);
+        self.0.scroller.add(0.0, dir.signum() as f64 * notches * 10.0, c.edge_ms.clamp(150, 3000) as f64);
+        json!({"ok": true}).to_string()
+    }
+
+    /// Stop scrolling: put the pointer back where it was before `ScrollStart` (once the glide has finished).
     async fn scroll_end(&self) {
+        wait_scroll_idle(&self.0).await;
         let origin = self.0.scroll_origin.lock().await.take();
         if let (Some((x, y)), Some(p)) = (origin, self.0.pointer.lock().await.as_ref()) {
             let _ = p.move_to(x, y).await;
@@ -356,6 +368,7 @@ impl Daemon {
 
     /// Re-read the same window (Shortcat's Cmd+R): drops the snapshot without `Closed`, then emits `Opened` again.
     async fn refresh(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        wait_scroll_idle(&self.0).await; // labels must match where a running glide ends
         self.0.snap.lock().await.take();
         open(&self.0, &em).await.to_string()
     }
@@ -605,35 +618,77 @@ async fn arrow_key(sh: &Shared, em: &SignalEmitter<'_>, k: &crate::keygrab::Key)
     }
 }
 
-/// Scroll by (dx, dy) wheel clicks with the user's scroll settings applied: swapped left/right, natural direction,
-/// smooth easing (see config.rs). Clamped so a runaway caller can't flood the desktop.
-async fn do_scroll(p: &crate::pointer::Pointer, dx: i32, dy: i32) -> anyhow::Result<()> {
+/// Queue a scroll of (dx, dy) tenths of a wheel notch with the user's scroll settings applied: swapped left/right,
+/// natural direction, the glide's length (see config.rs). Clamped so a runaway caller can't flood the desktop.
+fn queue_scroll(sh: &Shared, dx: f64, dy: f64) {
     let c = config::load().scroll;
-    let (mut dx, mut dy) = (dx.clamp(-200, 200), dy.clamp(-200, 200));
+    let (mut dx, mut dy) = (dx.clamp(-2000.0, 2000.0), dy.clamp(-2000.0, 2000.0));
     if c.invert_horizontal {
         dx = -dx;
     }
     if c.natural {
         (dx, dy) = (-dx, -dy);
     }
-    p.scroll(dx, dy, if c.smooth { c.smooth_ms.min(1000) } else { 0 }).await
+    sh.scroller.add(dx, dy, if c.smooth { c.smooth_ms.clamp(20, 1000) as f64 } else { 0.0 });
+}
+
+/// Wait (at most 3 s) for the running glide to finish, so the pointer is not moved away from under it.
+async fn wait_scroll_idle(sh: &Shared) {
+    for _ in 0..300 {
+        if !sh.scroller.busy() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Sends the scroll engine's output as smooth axis events about every 8 ms while a glide runs.
+async fn scroll_task(sh: Arc<Shared>) {
+    loop {
+        sh.scroller.wake.notified().await;
+        let mut tick = tokio::time::interval(Duration::from_millis(8));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last = std::time::Instant::now();
+        loop {
+            tick.tick().await;
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last).as_secs_f64().min(0.05);
+            last = now;
+            let t = sh.scroller.step(dt);
+            let guard = sh.pointer.lock().await;
+            let Some(p) = guard.as_ref() else {
+                sh.scroller.clear();
+                break;
+            };
+            let sent = if t.dx != 0.0 || t.dy != 0.0 { p.axis(t.dx, t.dy, false).await } else { Ok(()) };
+            let fin = if t.done && t.emitted { p.axis(0.0, 0.0, true).await } else { Ok(()) };
+            if let Err(e) = sent.and(fin) {
+                eprintln!("scroll failed: {e}");
+                sh.scroller.clear();
+                break;
+            }
+            if t.done {
+                break;
+            }
+        }
+    }
 }
 
 /// Space + D / U while arrow mode is on: scroll the middle of the focused window (the overlay is hidden, so the wheel
 /// reaches the app directly). The pointer is parked once and put back when the mode ends.
 async fn arrow_mode_scroll(sh: &Shared, dir: i32) {
-    let step = config::load().scroll.step.max(1);
+    let step = (config::load().scroll.distance.clamp(0.1, 20.0) * 10.0).round();
     let Some(f) = sh.focus.lock().await.clone() else { return };
-    let guard = sh.pointer.lock().await;
-    let Some(p) = guard.as_ref() else { return };
-    let mut origin = sh.scroll_origin.lock().await;
-    if origin.is_none() {
-        *origin = kwin::cursor_pos(Duration::from_millis(500)).await;
-        let _ = p.move_to((f.x + f.w / 2) as f64, (f.y + f.h / 2) as f64).await;
+    {
+        let guard = sh.pointer.lock().await;
+        let Some(p) = guard.as_ref() else { return };
+        let mut origin = sh.scroll_origin.lock().await;
+        if origin.is_none() {
+            *origin = kwin::cursor_pos(Duration::from_millis(500)).await;
+            let _ = p.move_to((f.x + f.w / 2) as f64, (f.y + f.h / 2) as f64).await;
+        }
     }
-    if let Err(e) = do_scroll(p, 0, dir * step).await {
-        eprintln!("scroll failed: {e}");
-    }
+    queue_scroll(sh, 0.0, dir as f64 * step);
 }
 
 /// Leave arrow mode: give every key back to the app, and reopen the overlay on the (changed) window if asked.
@@ -641,6 +696,7 @@ async fn end_arrows(sh: &Shared, em: &SignalEmitter<'_>, reopen: bool) {
     if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
         crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
     }
+    wait_scroll_idle(sh).await;
     if let Some((x, y)) = sh.scroll_origin.lock().await.take() {
         if let Some(p) = sh.pointer.lock().await.as_ref() {
             let _ = p.move_to(x, y).await; // pointer back after Space + D/U scrolling in arrow mode
@@ -906,6 +962,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         grab_started: Default::default(),
         menus,
         scroll_origin: Mutex::new(None),
+        scroller: Default::default(),
         keys: Default::default(),
     });
     let conn = zbus::connection::Builder::session()?
@@ -916,6 +973,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         .await
         .map_err(|e| anyhow::anyhow!("could not start (is another vimvibe daemon already running?): {e}"))?;
     let em = SignalEmitter::new(&conn, PATH)?;
+
+    tokio::spawn(scroll_task(sh.clone()));
 
     // keys typed over a popup (see keygrab.rs): Esc closes here, so the keyboard is released even without a UI
     {
