@@ -15,7 +15,8 @@ Press **Meta+Shift+Space** in any app. Every button, link, tab and field in the 
 inside each split terminal; the panel lists the matches with their labels and Ctrl+1…9 shortcuts.*
 
 > **Status: working prototype.** Built and tested on Fedora 44, KDE Plasma 6.7 on Wayland. Other desktops are planned
-> (see [research/11](research/11-os-scope-plan.md)). Expect rough edges; reports are welcome.
+> (see [research/11](research/11-os-scope-plan.md)). Expect rough edges; reports and contributions are welcome
+> ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 - [How it works](#how-it-works)
 - [Install](#install)
@@ -30,7 +31,7 @@ inside each split terminal; the panel lists the matches with their labels and Ct
 - [Troubleshooting](#troubleshooting)
 - [Commands](#command-reference)
 - [Upgrading and developing side by side](#upgrading-and-developing-side-by-side)
-- [Developer guide](#developer-guide)
+- [Developer guide](#developer-guide) and [CONTRIBUTING.md](CONTRIBUTING.md)
 - [Shortcat feature parity](#shortcat-feature-parity)
 - [Privacy and security](#privacy-and-security)
 
@@ -492,20 +493,33 @@ python3 palette/vimvibe_palette.py --trigger --query sa --quit-after 5   # open 
 
 ```
 core/                Rust: AT-SPI reading, matching, labels, KWin bridge, daemon, pointer, doctor
+  src/daemon.rs      D-Bus service org.vimvibe.Daemon (the entry point for most behaviour)
   src/enumerate.rs   find the target window, read its elements (Cache / concurrent walk)
   src/matcher.rs     fuzzy search with role words and synonyms
   src/hints.rs       letter labels
   src/model.rs       elements and the activation ladder (action → selection → focus → pointer)
   src/kwin.rs        KWin scripts: focus, geometry, window list, raise, cursor
-  src/daemon.rs      D-Bus service org.vimvibe.Daemon
-  src/pointer.rs     RemoteDesktop portal clicks
+  src/decor.rs       title-bar buttons          src/popups.rs   menus and Plasma popups
+  src/apps.rs        installed applications as results
+  src/keygrab.rs     keys through the accessibility registry (over popups; arrow mode)
+  src/scroller.rs    smooth scrolling           src/pointer.rs  RemoteDesktop portal: clicks, motion, keys
+  src/chromium.rs    Chromium/Electron: detect, fix launchers, restart with --force-renderer-accessibility
   src/config.rs      ~/.config/vimvibe/config.toml (parts the daemon enforces), profiles (dev next to installed)
-  src/doctor.rs      setup check
+  src/doctor.rs      setup check and its --fix options
 packaging/icons/     the icon: vimvibe.svg (edit this) and the generated PNG sizes (`python3 packaging/icons/make-icons.py`)
 palette/             Python/Qt: overlay (vimvibe_palette.py), Settings window (vimvibe_settings.py),
-                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py), the mouse grid logic (vimvibe_mouse.py, tests: test_mouse.py)
+                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py),
+                     the mouse grid logic (vimvibe_mouse.py, tests: test_mouse.py)
 packaging/           launcher script, optional systemd user unit
 research/            design notes and measurements (start with 09, 10, 11)
+```
+
+Checks before a pull request (details and conventions in [CONTRIBUTING.md](CONTRIBUTING.md)):
+
+```bash
+cargo test   --release --manifest-path core/Cargo.toml
+cargo clippy --release --manifest-path core/Cargo.toml
+(cd palette && python3 -m unittest test_keys test_mouse)
 ```
 
 ### D-Bus API
@@ -566,8 +580,9 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 ## Known limitations
 
 - KDE Plasma (Wayland) only for now; focus tracking and the shortcut use KWin/kglobalaccel.
-- The overlay is a normal fullscreen window, not a layer-shell surface: keys typed in the instant between the shortcut
-  and the overlay appearing can reach the app, and KDE may animate the overlay.
+- The overlay is a layer-shell surface when `layer-shell-qt` is available (it ships with Plasma); without it, it falls
+  back to a normal fullscreen window, where keys typed in the instant between the shortcut and the overlay appearing
+  can reach the app and KDE may animate it.
 - Not yet tested: HiDPI/fractional scaling, multiple monitors, XWayland apps, very large pages with the overlay.
 - Only the focused window's elements (plus other windows as switch targets) — menus, tray, launcher: see the plan.
 - To find open menus (Qt keeps them out of the accessibility tree) vimvibe listens for "menu shown" events. While any
@@ -576,7 +591,9 @@ Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvi
 - Menus that were already open when the daemon started are not known until they are reopened.
 - Over Plasma's popups (start menu, tray, calendar) and open menus vimvibe reads your keys through the accessibility registry instead
   of taking the keyboard (so the popup stays open). Plain keys and Shift go to vimvibe while it is open there;
-  Ctrl/Alt/Super combinations still reach the popup. Esc, or 60 s without a key, gives the keyboard back.
+  Ctrl/Alt/Super combinations still reach the popup, except Ctrl+Space (hide/show the panel), which vimvibe takes. Esc, or 60 s without a key, gives the keyboard back.
+- Restarting a Chromium-based app (to turn its accessibility on) is a normal quit and relaunch; unsaved text in
+  forms can be lost, and PWAs or apps started from a terminal get the flag only through that restart, not the launcher fix.
 - Elements an app doesn't expose to accessibility (custom-drawn canvases, some image views) get no label.
 - Title-bar button labels are placed from the KWin button layout; with an unusual decoration theme they may sit a few
   pixels off (pressing them is exact: it runs the KWin action, not a click).
