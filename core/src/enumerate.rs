@@ -73,6 +73,7 @@ pub async fn target_window(conn: &AccessibilityConnection, app_filter: Option<&s
     let mut best: Option<(i32, Window)> = None;
     let mut fallback = None;
     let mut any_pid_match = false;
+    // visit every app on the accessibility bus and score each of its windows; the best score is the target
     for a in root.get_children().await? {
         let Ok(app) = proxy(conn, &a).await else { continue };
         let app_name = app.name().await.unwrap_or_default();
@@ -93,6 +94,8 @@ pub async fn target_window(conn: &AccessibilityConnection, app_filter: Option<&s
             let win = Window { app: app_name.clone(), title: title.clone(), root: w.clone(), geometry: if pid_match { geometry } else { None } };
             let active = state.contains(State::Active);
             if active || pid_match {
+                // score: the PID KWin reported dominates (+16, +4 if the title matches the caption), then Active (+8),
+                // visible (+2), has content (+4) and a title (+1)
                 let mut score = 1;
                 if pid_match {
                     score += 16;
@@ -385,9 +388,11 @@ fn cached_content_name(it: &atspi::CacheItem, children: &std::collections::HashM
 pub async fn enumerate_cache(conn: &AccessibilityConnection, win: &Window, o: &Opts) -> Option<Vec<Element>> {
     use atspi::proxy::cache::CacheProxy;
     use std::collections::HashMap;
+    // 1. fetch the whole app tree in one call (the bus name of the window's app is the cache's destination)
     let bus = win.root.name()?.clone();
     let cache = CacheProxy::builder(conn.connection()).destination(bus).ok()?.build().await.ok()?;
     let items = cache.get_items().await.ok()?;
+    // 2. index the flat item list by parent, children in their on-screen order, so the tree can be walked locally
     let mut children: HashMap<String, Vec<&atspi::CacheItem>> = HashMap::new();
     for it in &items {
         children.entry(it.parent.path_as_str().to_string()).or_default().push(it);
@@ -401,6 +406,7 @@ pub async fn enumerate_cache(conn: &AccessibilityConnection, win: &Window, o: &O
             eprintln!("cache item {:?} role {:?} states showing={} parent={} children_in_cache={}", it.short_name, it.role, it.states.contains(State::Showing), it.parent.path_as_str(), children.get(it.object.path_as_str()).map_or(0, |v| v.len()));
         }
     }
+    // 3. depth-first walk from the window root, keeping hidden-subtree pruning and collecting actionable candidates
     let mut stack: Vec<&atspi::CacheItem> = children.get(win.root.path_as_str()).into_iter().flatten().rev().copied().collect();
     let mut cands = vec![];
     // Chromium's cache can lag behind the live tree (new nodes missing, VS Code: 3 buttons). Every node records how many
@@ -428,6 +434,8 @@ pub async fn enumerate_cache(conn: &AccessibilityConnection, win: &Window, o: &O
     if std::env::var_os("VIMVIBE_DEBUG").is_some() {
         eprintln!("cache: {} items in app, {} candidates", items.len(), cands.len());
     }
+    // 4. turn candidates into Elements concurrently: pick a name (own name, description, then text of its children),
+    //    read the on-screen rectangle (the only per-element call) and drop empty or zero-sized ones
     let children_ref = &children;
     let built = join_all(cands.into_iter().map(|(it, role_s)| async move {
         let mut name = it.short_name.clone(); // crate field naming: short_name = accessible name, name = description

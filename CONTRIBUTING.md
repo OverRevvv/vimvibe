@@ -12,6 +12,7 @@ looks like. The [README](README.md) covers using vimvibe; this covers working on
 - [Tests and checks](#tests-and-checks)
 - [Where things live](#where-things-live)
 - [Rules the design depends on](#rules-the-design-depends-on)
+- [Comments: how the code is documented](#comments-how-the-code-is-documented)
 - [Common changes](#common-changes)
 - [Branches, commits and pull requests](#branches-commits-and-pull-requests)
 - [Reporting bugs](#reporting-bugs)
@@ -147,6 +148,19 @@ Keep these when you change anything; reviewers will check them.
 9. **Do not invent measurements.** If you claim a behaviour ("Chrome ignores X"), measure it, and put the result in
    `research/` or the pull request.
 
+## Comments: how the code is documented
+
+The code is meant to be read top-down by someone new to the project, so comments are part of every change:
+
+- **Every function gets a comment** saying what it is responsible for and what it returns or changes: `///` in Rust,
+  a docstring in Python. Tests get a one-line comment saying what behaviour they pin down.
+- **Every file starts with a header** (`//!` or a module docstring) saying what the file is for and where it fits.
+- **Explain *why*, not *what*.** Comment non-obvious logic: ordering that matters, a workaround for an app's quirk,
+  a measured number, a lock or `await` you must not move. Long functions get short step comments (1., 2., ...).
+- **Keep comments true.** If you change behaviour, change the comment in the same commit. A stale comment is worse
+  than none. When you add or change a D-Bus method, update the header in `daemon.rs` and the README table.
+- Do not narrate the obvious (`// increment i`) and do not leave commented-out code.
+
 ## Common changes
 
 **Add a D-Bus method.** Implement it in `daemon.rs` (follow the existing `#[zbus::interface]` methods, validate input, return
@@ -179,6 +193,7 @@ to agree on the shape before writing a lot of code.
   - how you tested it (commands run, the desktop and apps you tried by hand);
   - screenshots or a short recording for anything visible in the overlay or Settings;
   - any new permission, file, or D-Bus surface the change adds.
+- Every new or changed function is commented as described in [Comments](#comments-how-the-code-is-documented).
 - Update the docs in the same pull request: README (user-facing behaviour, commands, D-Bus table, limitations),
   the doc comment at the top of the file you changed, and this file if you changed how to build or test.
 - Do not commit build output (`core/target/`), `__pycache__`, personal config, or tokens.

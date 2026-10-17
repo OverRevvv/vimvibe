@@ -184,6 +184,7 @@ impl Apps {
 mod tests {
     use super::*;
 
+    // Profile names (dev, beta) are sanitised so they cannot escape the config directory.
     #[test]
     fn profile_names_are_clean() {
         // SAFETY: tests in this crate don't read the environment concurrently
@@ -194,6 +195,7 @@ mod tests {
         assert_eq!(dir_name(), "vimvibe");
     }
 
+    // config.toml parses, and an excluded-app entry matches by name, window class or process name.
     #[test]
     fn parses_and_matches() {
         let c: Config = toml::from_str("[apps]\nexclude = [\"KeePassXC\", \"konsole\"]\n[ui]\naccent = \"red\"\n").unwrap();

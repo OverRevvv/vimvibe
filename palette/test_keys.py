@@ -14,16 +14,19 @@ NONE = 0
 
 class KeyTests(unittest.TestCase):
     def test_parse_round_trip(self):
+        """A key combination survives parse -> text -> parse."""
         for text in ("Ctrl+Space", "Return", "Ctrl+,", "Ctrl+Shift+,", "Shift+Tab", "Alt+Return", "F5", "Ctrl++"):
             parsed = K.parse_key(text)
             self.assertIsNotNone(parsed, text)
             self.assertEqual(K.parse_key(K.format_key(*parsed)), parsed, text)
 
     def test_unreadable(self):
+        """Text that is not a key combination parses to nothing instead of raising."""
         for text in ("", "Ctrl", "Ctrl+", "Hyper+Q", "Ctrl+Shift"):
             self.assertIsNone(K.parse_key(text), text)
 
     def test_defaults_resolve_without_problems(self):
+        """The built-in bindings are valid and conflict-free."""
         m = K.KeyMap(None)
         self.assertEqual(m.problems, [])
         self.assertEqual(m.match(Qt.Key_Space, Qt.ControlModifier), "toggle_panel")
@@ -35,6 +38,7 @@ class KeyTests(unittest.TestCase):
         self.assertIsNone(m.match(Qt.Key_A, Qt.NoModifier))
 
     def test_user_bindings_replace_defaults(self):
+        """A [keys] entry replaces the default for that action; an empty list unbinds it."""
         m = K.KeyMap({"toggle_panel": ["Ctrl+H"], "close": [], "tap_hover": []})
         self.assertEqual(m.match(Qt.Key_H, Qt.ControlModifier), "toggle_panel")
         self.assertIsNone(m.match(Qt.Key_Space, Qt.ControlModifier))
@@ -43,11 +47,13 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(m.label("close"), "")
 
     def test_bad_values_are_reported_not_fatal(self):
+        """Unreadable or unusable bindings are collected in `problems` (no exception) and bind nothing."""
         m = K.KeyMap({"click": ["Nonsense+Q"], "tap_hover": ["Meta"], "row_act": ["Q"]})
         self.assertEqual(len(m.problems), 3)
         self.assertEqual(m.match(Qt.Key_Return, Qt.NoModifier), None)
 
     def test_conflicts_and_typing_keys(self):
+        """Two actions on one key, or an action on a plain typing key, are flagged."""
         self.assertEqual(K.conflicts(None), {})
         self.assertEqual(list(K.conflicts({"next": ["Return"]}).values()), [["click", "next"]])
         self.assertTrue(K.is_plain_text_key(*K.parse_key("a")))

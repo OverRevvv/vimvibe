@@ -131,6 +131,7 @@ class KeyCapture(QDialog):
     """"Press the new key": a small modal dialog that records the next key combination (Esc cancels)."""
 
     def __init__(self, parent, title):
+        """`title` names the action being rebound; the pressed combination ends up in `self.result_text`."""
         super().__init__(parent)
         self.setWindowTitle("New key")
         self.result_text = None

@@ -82,6 +82,7 @@ pub fn keyboard_granted() -> bool {
     read_token().is_some() && std::fs::read_to_string(devices_path()).is_ok_and(|s| s.contains("keyboard"))
 }
 
+/// Whether `pointer-setup` was ever completed (a saved restore token exists), i.e. clicks need no new dialog.
 pub fn is_set_up() -> bool {
     read_token().is_some()
 }

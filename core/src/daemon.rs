@@ -541,6 +541,7 @@ async fn activate_id(sh: &Shared, id: usize, act: Act, em: &SignalEmitter<'_>) -
     // close first: the UI hides, the target window regains focus, then the action lands
     close(sh, em).await;
     let t = Instant::now();
+    // special results (windows, title-bar buttons, apps) are handled by KWin or the launcher, not by AT-SPI
     let res = if let Some(x) = extra {
         match x {
             Extra::Window(wid) => kwin::activate_window(&wid, Duration::from_millis(500)).await.map(|_| json!({"ok": true, "message": "raised window", "via": "kwin"})),
@@ -548,6 +549,8 @@ async fn activate_id(sh: &Shared, id: usize, act: Act, em: &SignalEmitter<'_>) -
             Extra::App(path) => crate::apps::launch(&path).map(|_| json!({"ok": true, "message": "launched", "via": "desktop"})),
         }
     } else {
+        // normal elements: Click walks the semantic ladder, falling back to a pointer click when it asks for one;
+        // Focus tries grab_focus, then clicks text-like roles; the rest (right click, hover, ...) are pointer actions
         match act {
             Act::Click => match el.activate(&sh.a11y, crate::pointer::is_set_up()).await {
                 Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "semantic"})),
@@ -793,6 +796,7 @@ async fn end_arrows(sh: &Shared, em: &SignalEmitter<'_>, reopen: bool) {
     }
 }
 
+/// Drop the open snapshot: give back any keys grabbed through the accessibility registry, forget the window, and emit `Closed`.
 async fn close(sh: &Shared, em: &SignalEmitter<'_>) {
     if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
         crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
@@ -1078,6 +1082,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         if let Err(e) = crate::keygrab::serve(sh.a11y.connection(), ktx, sh.keys.clone()).await {
             eprintln!("keystroke listener unavailable ({e}); popups will be closed by the overlay");
         }
+        // The key task: while a popup is grabbed, forward each key the listener sees to the overlay (or, in arrow
+        // mode, turn it into an arrow key), close on Esc, and give the keyboard back after 60 s of silence.
         let (sh2, em2) = (sh.clone(), em.clone());
         tokio::spawn(async move {
             const IDLE: Duration = Duration::from_secs(60); // never hold the keyboard longer than this without a key
@@ -1197,6 +1203,7 @@ mod tests {
     use super::*;
     use crate::keygrab::{KC_H, KC_I, KC_J, KC_K, KC_L};
 
+    // Physical keys map to arrow directions for both the hjkl and ijkl layouts.
     #[test]
     fn arrow_layouts() {
         assert_eq!(arrow_for(KC_H, "hjkl"), Some((-1, 0)));

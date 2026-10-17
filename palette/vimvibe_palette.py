@@ -778,6 +778,9 @@ class Overlay(QWidget):
         and modifier taps."""
         if obj is not self.edit:
             return super().eventFilter(obj, ev)
+        # Order matters: keyboard-mouse mode swallows everything first; then modifier-only presses (for taps); then
+        # rebindable actions, Space handling (a held Space turns H J K L into scrolling), result rows, and finally
+        # the key release side (end of Space / end of a modifier tap).
         t = ev.type()
         if self.mouse and t in (QEvent.KeyPress, QEvent.KeyRelease):
             return self.mouse_event(ev)
@@ -928,11 +931,13 @@ class Overlay(QWidget):
         return " · ".join(f"[{self.keymap.label(a)}] {what}" for a, what in parts if self.keymap.label(a))
 
     def move_text(self):
+        """Banner for move mode: the configured movement keys plus the rebindable click/grid/back keys."""
         keys = " ".join(self.cfg["mouse"].get("keys", "hjkl").upper())
         return f"Mouse — [{keys}] move · [Shift] faster · [Alt] precise · " + self.key_text(
             ("click", "click"), ("right_click", "right click"), ("mouse_place", "stay here"), ("mouse_grid", "grid"), ("close", "back"))
 
     def grid_text(self):
+        """Banner for grid mode; the hint depends on whether another zoom level exists and which scope Ctrl+Shift+G switches to."""
         g = self.grid
         zoom = "type a cell's two letters" if g.can_zoom() else "deepest level"
         scope = "screen" if self.grid_scope == "window" else "window"
@@ -1011,6 +1016,7 @@ class Overlay(QWidget):
 
     def paint_panel(self, p):
         """Draw the search panel: field frame, hint line, result rows (name, role, label, Ctrl+n) and footer."""
+        # layout, top to bottom: rounded panel -> search field frame -> hint line -> result rows -> footer line
         t = self.t
         pr = QRectF(self.panel); pr.setHeight(self.panel_height(min(t.rows, len(self.hits))))
         p.setBrush(Qt.NoBrush)
@@ -1045,6 +1051,7 @@ class Overlay(QWidget):
             if idx == self.sel:
                 sp = QPainterPath(); sp.addRoundedRect(rr.adjusted(0, 1, 0, -1), 7, 7)
                 c = QColor(t.selected); c.setAlpha(75); p.fillPath(sp, c)
+            # right to left inside a row: Ctrl+n key caps, then the letter label, then the role, then the name
             kh = rr.height() - 12
             nr = QRectF(rr.right() - 28, rr.y() + 6, 24, kh)
             cr = QRectF(nr.x() - 28, nr.y(), 24, kh)

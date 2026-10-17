@@ -122,6 +122,7 @@ pub fn search<'a>(els: &'a [Element], query: &str, limit: usize) -> Vec<Hit<'a>>
 mod tests {
     use super::*;
 
+    // An enabled element with the given role and name, for the tests below.
     fn el(role: &str, name: &str) -> Element {
         Element {
             app: "t".into(), window: "w".into(), role: role.into(), name: name.into(), description: String::new(),
@@ -129,10 +130,12 @@ mod tests {
         }
     }
 
+    // The names of the hits, in rank order.
     fn names(h: &[Hit]) -> Vec<String> {
         h.iter().map(|h| h.el.name.clone()).collect()
     }
 
+    // Fuzzy matches are found and a prefix match outranks a scattered one.
     #[test]
     fn fuzzy_and_prefix() {
         let els = vec![el("Button", "Save As"), el("Button", "Save"), el("MenuItem", "Select all")];
@@ -140,6 +143,7 @@ mod tests {
         assert_eq!(names(&h)[0], "Save"); // shorter + prefix wins
     }
 
+    // A role word ("button", "btn") limits results to that role.
     #[test]
     fn role_word_filters() {
         let els = vec![el("Link", "Patna"), el("Button", "Patna map")];
@@ -149,12 +153,14 @@ mod tests {
         assert_eq!(names(&h), vec!["Patna map"]);
     }
 
+    // If a role word is part of the label, it still matches by name instead of filtering everything out.
     #[test]
     fn role_word_fallback_when_part_of_label() {
         let els = vec![el("Button", "Voice button")];
         assert_eq!(names(&search(&els, "voice button", 10)), vec!["Voice button"]);
     }
 
+    // Synonyms widen a match: "delete" finds "Remove" but not the similar-looking "Rename".
     #[test]
     fn synonyms() {
         let els = vec![el("Button", "Remove"), el("Button", "Rename")];
@@ -162,6 +168,7 @@ mod tests {
         assert_eq!(names(&h), vec!["Remove"]);
     }
 
+    // The description is only searched for an exact substring, so it does not add fuzzy noise.
     #[test]
     fn description_needs_substring() {
         let mut a = el("Button", ")");
@@ -172,6 +179,7 @@ mod tests {
         assert_eq!(names(&search(&els, "clear", 10)), vec!["X"]);
     }
 
+    // Disabled elements sort after enabled ones.
     #[test]
     fn disabled_ranks_last() {
         let mut a = el("Button", "Copy");
@@ -180,6 +188,7 @@ mod tests {
         assert_eq!(names(&search(&els, "copy", 10))[0], "Copy path");
     }
 
+    // With no query the elements are listed in reading order.
     #[test]
     fn empty_query_orders_by_position() {
         let mut a = el("Button", "B");

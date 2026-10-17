@@ -106,10 +106,12 @@ fn compute(f: &FocusInfo, left: &str, right: &str) -> Vec<Button> {
 mod tests {
     use super::*;
 
+    // A sample focused window with a title bar, used by the tests below.
     fn focus() -> FocusInfo {
         FocusInfo { pid: 1, class: "x".into(), caption: "c".into(), x: 213, y: 113, w: 940, h: 560, id: "{a}".into(), fx: 213, fy: 85, fw: 940, fh: 588, ops: "XAID".into() }
     }
 
+    // With KDE's default button layout the close button is the rightmost one.
     #[test]
     fn default_layout_places_close_rightmost() {
         let b = compute(&focus(), "MS", "HIAX");
@@ -120,6 +122,7 @@ mod tests {
         assert!(close.rect.0 + close.rect.2 <= 940 && close.rect.0 > 880, "close sits at the right edge: {:?}", close.rect);
     }
 
+    // Windows that draw their own title bar (no KWin decoration) get no extra buttons.
     #[test]
     fn no_buttons_without_server_side_decoration() {
         let mut f = focus();
@@ -127,6 +130,7 @@ mod tests {
         assert!(compute(&f, "MS", "HIAX").is_empty());
     }
 
+    // The left/right button layout strings are read from the [org.kde.kdecoration2] section of kwinrc.
     #[test]
     fn reads_kwinrc() {
         let (l, r) = parse_layout("[General]\nx=1\n[org.kde.kdecoration2]\nButtonsOnLeft=X\nButtonsOnRight=IA\n");

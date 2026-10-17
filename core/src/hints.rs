@@ -131,10 +131,12 @@ pub fn as_hint(query: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    // A small element at (x, y) with the given name, for the tests below.
     fn el(name: &str, x: i32, y: i32) -> Element {
         Element { name: name.into(), rect: (x, y, 10, 10), enabled: true, ..Default::default() }
     }
 
+    // Labels come from the name (Pull requests -> PR), are unique, and unnamed elements still get one.
     #[test]
     fn mnemonics_and_uniqueness() {
         let els = vec![el("Pull requests", 0, 0), el("Projects", 50, 0), el("Changelog", 100, 0), el("", 0, 50), el("(unlabeled entry)", 10, 50), el("Projects 2", 0, 100)];
@@ -149,6 +151,7 @@ mod tests {
         assert!(h.iter().all(|s| (2..=3).contains(&s.len())));
     }
 
+    // Even a window with far more elements than two-letter labels gets a distinct label for each.
     #[test]
     fn many_elements_all_get_hints() {
         let els: Vec<Element> = (0..1500).map(|i| el(if i % 3 == 0 { "" } else { "Item" }, i % 40, i / 40)).collect();
@@ -157,6 +160,7 @@ mod tests {
         assert_eq!(h.iter().collect::<HashSet<_>>().len(), h.len());
     }
 
+    // Only text that looks like a label (2-3 letters) is treated as one when searching.
     #[test]
     fn hint_shaped_queries() {
         assert_eq!(as_hint("pr"), Some("PR".into()));
@@ -169,6 +173,7 @@ mod tests {
 #[cfg(test)]
 mod bench {
     use super::*;
+    // Labelling 10,000 elements stays fast enough for huge pages.
     #[test]
     fn assign_10k_is_fast() {
         let names = ["Pull requests", "Issues", "Code", "Actions", "", "Settings", "Item 12", "Changelog", "Explore all"];

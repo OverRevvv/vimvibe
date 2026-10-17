@@ -56,7 +56,8 @@ impl Bridge {
         }
     }
 
-    /// Generic one-shot payload channel (window list, cursor position).
+    /// Called by KWin scripts (via the `Data` bridge method) for answers that are not a focus report: the window
+    /// list, surfaces, the cursor position. Generic one-shot payload channel (window list, cursor position).
     fn data(&self, json: String) {
         let _ = self.wtx.send(json);
     }

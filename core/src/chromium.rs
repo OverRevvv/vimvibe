@@ -188,6 +188,7 @@ pub async fn restart(pid: u32) -> anyhow::Result<String> {
 mod tests {
     use super::*;
 
+    // The flag goes into the Exec line of a Chromium launcher (also its actions), other launchers are untouched, and a fixed file is not edited again.
     #[test]
     fn flag_is_added_once() {
         let d = "[Desktop Entry]\nExec=/usr/bin/brave-browser-stable %U\n[Desktop Action x]\nExec=/usr/bin/brave-browser-stable\nExec=/usr/bin/other\n";
@@ -199,6 +200,7 @@ mod tests {
         assert!(with_flag("Exec=firefox %u\n", |_| false).is_none());
     }
 
+    // Chromium rewrites /proc/<pid>/cmdline into one space-joined string; it must be split back into arguments.
     #[test]
     fn splits_a_rewritten_command_line() {
         let one = b"/opt/google/chrome/chrome --user-data-dir=/tmp/my dir --no-first-run https://example.com";
@@ -206,6 +208,7 @@ mod tests {
         assert_eq!(split_cmdline(b"/usr/bin/x\0--a\0b c\0"), vec!["/usr/bin/x", "--a", "b c"]);
     }
 
+    // A program is Chromium-based if it ships the engine files, whatever it is called.
     #[test]
     fn finds_chromium_by_its_files_not_its_name() {
         let dir = std::env::temp_dir().join(format!("vimvibe-chromium-test-{}", std::process::id()));
