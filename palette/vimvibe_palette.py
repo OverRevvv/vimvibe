@@ -41,7 +41,7 @@ import argparse, json, math, os, sys, time
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Slot
 from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusPendingCallWatcher, QDBusServiceWatcher
 from PySide6.QtGui import QColor, QFontMetricsF, QIcon, QGuiApplication, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QWidget
 
 from vimvibe_keys import KeyMap, iv
 from vimvibe_mouse import Grid
@@ -140,6 +140,7 @@ class Overlay(QWidget):
         self.space_down = False   # Space is held: H J K L scroll instead of typing
         self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
         self.scrolling = False
+        self.refreshing = False   # after scrolling: the window is being re-read, so nothing stale is drawn meanwhile
         self.last_g = 0.0         # time of the last "g" while Space is held (gg = top)
         self.arrowing = False     # arrow mode: the overlay is hidden and the daemon turns H J K L into arrow keys
         self.panel_override = None  # the panel toggle key: True/False forces it shown/hidden, None = the default rule
@@ -196,6 +197,7 @@ class Overlay(QWidget):
         self.load_settings()  # settings apply on the next open, no restart
         self.space_down = self.space_used = self.arrowing = self.scrolling = False  # a fresh open ends any key mode
         self.leave_mouse()
+        was_refresh, self.refreshing = self.refreshing, False
         self.meta = json.loads(payload)
         self.panel_override = False if self.cfg["ui"].get("start_hidden") else None
         self.sync_field()
@@ -207,13 +209,20 @@ class Overlay(QWidget):
         self.set_placeholder()
         self.query("")
         self.place_panel()
-        if self.passive:
+        if self.isVisible():  # re-read after scrolling: already on screen, don't show it again (KWin would animate it)
+            self.update()
+        elif self.passive:
             self.show()  # layer surface anchored to every edge; no activation, the popup keeps the keyboard
         else:
             self.showFullScreen()
             self.raise_()
             self.activateWindow()
+        if not self.passive:
             self.edit.setFocus()
+        if was_refresh:
+            if not self.cfg["hints"].get("after_input"):
+                self.reveal_labels()  # the labels pop in at once, no delay
+            return
         if self.cfg["mouse"].get("open_in") == "grid":
             self.grid_scope = self.cfg["mouse"].get("scope", "window")
             self.enter_grid()
@@ -237,6 +246,10 @@ class Overlay(QWidget):
     def refused(self, payload):
         """Daemon signal: it could not open (excluded app, unreadable window); tell the user why."""
         meta = json.loads(payload)
+        self.refreshing = False
+        if meta.get("restart"):
+            QTimer.singleShot(0, lambda: self.offer_restart(meta["restart"]))
+            return
         if meta.get("excluded"):
             notify("vimvibe is off for this app", f"Excluded by the rule “{meta['excluded']}” in your vimvibe settings.")
         elif meta.get("unsupported"):
@@ -244,10 +257,36 @@ class Overlay(QWidget):
         else:
             notify("vimvibe can't read this window", meta.get("error", ""))
 
+    def offer_restart(self, app):
+        """A Chromium-based app (Chrome, Brave, Edge, an Electron app) was started without accessibility, so vimvibe sees
+        nothing in it and nothing can change that from outside: offer to restart it with the flag (tabs come back)."""
+        name = app.get("app") or "This app"
+        box = QMessageBox(QMessageBox.Question, "vimvibe",
+                          f"{name} isn't sharing its page with vimvibe yet.",
+                          QMessageBox.NoButton)
+        box.setInformativeText(f"Browsers built on Chromium only do that when they are started with accessibility on. "
+                               f"Restart {name} now with it? Your tabs come back, and vimvibe makes {name} start this way "
+                               f"from the menu from now on.")
+        yes = box.addButton("Restart it", QMessageBox.AcceptRole)
+        box.addButton("Not now", QMessageBox.RejectRole)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        res = self.call("RestartWithAccessibility", int(app["pid"]))
+        if res and res.get("ok"):
+            notify(f"{name} restarted", "Press the vimvibe shortcut again once it is back.")
+        else:
+            notify(f"vimvibe could not restart {name}", (res or {}).get("error", "the daemon did not answer"))
+
     def on_key(self, payload):
         """A key typed over a popup (passive mode): the daemon consumed it before the popup saw it."""
         k = json.loads(payload)
         name = k.get("name", "")
+        if k.get("ctrl"):  # the daemon only reports Ctrl+Space here: the hide / show key (if it is still bound)
+            if name == "space" and self.keymap.match(Qt.Key_Space, Qt.ControlModifier) == "toggle_panel":
+                self.toggle_panel()
+            return
         if name in ("Return", "KP_Enter"):
             self.act("click")
         elif name == "BackSpace":
@@ -499,7 +538,19 @@ class Overlay(QWidget):
         if self.windowHandle():
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
         if refresh:
+            # the old labels are wrong once the content has moved: draw nothing until the new ones arrive, then show
+            # them all at once (never the stale ones, never a staggered fade-in)
+            self.refreshing = True
+            self.labels_on = False
+            self.update()
+            QTimer.singleShot(4000, self.stop_refreshing)
             self.daemon.asyncCall("Refresh")
+
+    def stop_refreshing(self):
+        """Safety net: the re-read never answered (window closed, error), so draw normally again."""
+        if self.refreshing:
+            self.refreshing = False
+            self.update()
 
     def scroll_key(self, k, shift, direction=None):
         """Space + D / U (or a given `direction`): scroll; Shift scrolls four times as far."""
@@ -853,6 +904,8 @@ class Overlay(QWidget):
             p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * self.t.dim / 100)))
         if self.scrolling:
             self.paint_scroll_banner(p)
+            return
+        if self.refreshing:
             return
         if self.mouse == "grid":
             self.paint_grid(p)

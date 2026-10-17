@@ -220,6 +220,7 @@ exclude = ["keepassxc", "org.kde.konsole"]
 
 [accessibility]
 enable_on_start = true     # the daemon turns desktop accessibility on when it starts
+offer_restart = true       # offer to restart a Chromium-based app (Chrome, Brave, Electron) that shows nothing, with accessibility on
 ```
 
 One-off colour for a single run: `python3 ~/.local/share/vimvibe/vimvibe_palette.py --accent orange`
@@ -355,7 +356,7 @@ mouse_back = ["Backspace"]             # grid: zoom out
 Limits: the global shortcuts that open and quit vimvibe are KDE shortcuts (System Settings → Shortcuts → *vimvibe*,
 linked from the Keys tab). Space + H J K L / D / U follow physical key positions (they are also read by the daemon);
 choose between the Vim and the arrow layout in *Labels & behaviour*. Over the start menu and other popups vimvibe can't
-see Ctrl/Alt combinations, so the keys there keep their defaults.
+see most Ctrl/Alt combinations, so the keys there keep their defaults (Ctrl+Space, hide / show the panel, is the one exception).
 
 ## Excluding apps
 
@@ -373,8 +374,8 @@ vimvibe can only see apps that expose an accessibility tree. `vimvibe doctor` li
 | App type | What to do |
 |---|---|
 | Qt / KDE apps, GTK 3/4 apps, Firefox | turn accessibility on (`vimvibe doctor --fix`), then **restart the app** |
-| Chrome, Chromium, Edge, Brave | start with `--force-renderer-accessibility` |
-| Electron apps (VS Code, Discord, Slack, …) | start with `--force-renderer-accessibility` |
+| Chrome, Chromium, Edge, Brave, Vivaldi, any Chromium engine | need `--force-renderer-accessibility` (nothing on the accessibility bus can switch it on later — measured). vimvibe takes care of it: open vimvibe over such a window that shows nothing and it offers to **restart the app with the flag** (tabs come back) and fixes its menu launchers so it starts that way from then on. Same thing by hand: `vimvibe doctor --fix-chrome`, then quit the browser completely. Programs are recognised by their files, not their name. Turn the offer off with `[accessibility] offer_restart = false` |
+| Electron apps (VS Code, Discord, Slack, …) | same as Chromium: vimvibe offers the restart |
 | Java apps | need the Java ATK bridge |
 | Games, Tk, Wine, apps drawn without a toolkit | not supported yet (a pixel-based fallback is planned) |
 
@@ -390,7 +391,7 @@ Accessibility is a session setting that is off by default on most distributions;
 | The start menu closes when vimvibe opens | the overlay could not use layer-shell (`layer-shell-qt`, normally installed with Plasma): check `vimvibe logs` |
 | vimvibe keeps running / want it gone | **Meta+Shift+Q**, or `vimvibe stop` |
 | Notification "vimvibe is off for this app" | it's in your excluded list |
-| Few or no labels in Chrome/Electron | start the app with `--force-renderer-accessibility` |
+| Few or no labels in Chrome/Electron | `vimvibe doctor --fix-chrome`, then quit the app completely and reopen it from the menu (or start it with `--force-renderer-accessibility`) |
 | Labels in the wrong place | report it with your scaling and monitor setup (HiDPI/multi-monitor are not tested yet) |
 | "pointer control is not set up" | run `vimvibe-core pointer-setup` once and approve the dialog |
 | "Arrow keys need keyboard permission" | run `vimvibe-core pointer-setup` again and allow the keyboard too |
@@ -404,7 +405,7 @@ Accessibility is a session setting that is off by default on most distributions;
 
 ```text
 vimvibe start | stop (= quit) | restart | status | settings | logs | open | help
-vimvibe doctor [--fix] [--fix-env]
+vimvibe doctor [--fix] [--fix-env] [--fix-chrome]
 
 vimvibe-core <command> [--app NAME] [--json] [--strategy auto|cache|walk] ...
   daemon            the resident service (what `vimvibe start` runs)
@@ -518,6 +519,7 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `Elements() → json` | every element with id, label, role, screen rectangle |
 | `Activate(i)` / `ActivateId(id)` / `ActivateWith(id, action)` | act on a hit / an element; action = `click right double middle hover focus` |
 | `Refresh()` | re-read the same window |
+| `RestartWithAccessibility(pid)` | restart a Chromium-based app (only a main process that lacks `--force-renderer-accessibility`) with the flag, restoring its session, and fix its launchers |
 | `PointerMotion(dx, dy)`, `PointerAct(x, y, here, action)` | the keyboard mouse: move the pointer by whole pixels (no waiting); close the overlay, then `move`/`click`/`right`/`double`/`middle` at (x, y) or, with `here`, where the pointer is (`goto` only moves, keeping the overlay). Refused when `[mouse] enabled` is false |
 | `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEdge(dir)`, `ScrollEnd()` | park the pointer over element `id` (or the window), glide by `dx`/`dy` tenths of a wheel notch (returns at once; the glide carries on), jump to the top (`dir` -1) or bottom (1), put the pointer back after the glide |
 | `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-key mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |

@@ -11,6 +11,7 @@
 //!   ActivateWith(id, action) -> json  same with action click | right | double | middle | hover | focus
 //!   Refresh() -> json     re-read the same window (emits Opened again)
 //!   ScrollStart(id), Scroll(dx, dy), ScrollEdge(dir), ScrollEnd()   scroll the element `id` (or the window): smooth glide in tenths of a wheel notch; ScrollEdge jumps to the top (-1) / bottom (1)
+//!   RestartWithAccessibility(pid)   restart a Chromium-based app with --force-renderer-accessibility (see chromium.rs)
 //!   PointerMotion(dx, dy), PointerAct(x, y, here, action)   keyboard mouse: move the pointer by pixels; click/move at a point (closes the overlay)
 //!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
 //! Apps listed under [apps] exclude in ~/.config/vimvibe/config.toml are never read: Trigger emits Refused instead
@@ -345,6 +346,21 @@ impl Daemon {
                 *guard = None;
                 json!({"ok": false, "error": e.to_string()}).to_string()
             }
+        }
+    }
+
+    /// Restart the Chromium-based program `pid` (a browser, an Electron app) with `--force-renderer-accessibility`, and
+    /// add the flag to its menu launchers so it stays that way. Only a main process of such a program that lacks the
+    /// flag is touched; the answer says what happened. Closes the overlay first.
+    async fn restart_with_accessibility(&self, pid: u32, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        if crate::chromium::lacks_flag(pid).is_none() {
+            return json!({"ok": false, "error": "that is not a Chromium-based program that needs restarting"}).to_string();
+        }
+        close(&self.0, &em).await;
+        let launchers = crate::chromium::fix_launchers().map(|v| v.len()).unwrap_or(0);
+        match crate::chromium::restart(pid).await {
+            Ok(m) => json!({"ok": true, "message": m, "launchers_fixed": launchers}).to_string(),
+            Err(e) => json!({"ok": false, "error": e.to_string()}).to_string(),
         }
     }
 
@@ -848,6 +864,16 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
             let ((els, truncated), via) = find_elements(&sh.a11y, &win, &opts, Strategy::Auto).await;
             (els, truncated, via, win.app, win.title, win.geometry, t_win)
         };
+        // A Chromium-based app started without the accessibility flag shows no elements at all; no signal makes it
+        // build them later, so say so (the UI offers a restart) instead of opening an empty overlay.
+        if !popup_mode && els.is_empty() && cfg.accessibility.offer_restart {
+            if let Some(f) = focus.as_ref().filter(|f| crate::chromium::lacks_flag(f.pid).is_some()) {
+                return Ok(json!({
+                    "error": format!("{win_app} was started without accessibility, so vimvibe can't see inside it"),
+                    "restart": {"app": win_app, "pid": f.pid},
+                }));
+            }
+        }
         // Open menus and the desktop's panels live in surfaces of their own. KWin knows where those are; their
         // AT-SPI objects give the elements (window-relative). Pair them by app and size, then move their elements
         // into the target window's coordinates so one origin serves the whole snapshot.

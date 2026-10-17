@@ -1,6 +1,7 @@
 //! `vimvibe-core doctor`: first-run / troubleshooting check.
 //!
-//! Read-only unless asked: `--fix` turns session accessibility on, `--fix-env` writes the toolkit environment file.
+//! Read-only unless asked: `--fix` turns session accessibility on, `--fix-env` writes the toolkit environment file, `--fix-chrome` adds
+//! `--force-renderer-accessibility` to the launchers of Chromium-based browsers and editors.
 //! Most "it finds nothing" reports are accessibility setup, not bugs (research/10: the per-toolkit table from
 //! vimium-everywhere; research/08 R1: AT-SPI is off by default here and apps started earlier never appear).
 //! Privacy: window titles are never read or printed, only application class and PID.
@@ -118,7 +119,7 @@ QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\nGNOME_ACCESSIBILITY=1\nACCESSIBILITY_ENABLED
 
 /// Run every check (applying `--fix`/`--fix-env` first when asked), print them, and return the exit code
 /// (1 when anything failed).
-pub async fn run(fix: bool, fix_env: bool, json: bool) -> anyhow::Result<i32> {
+pub async fn run(fix: bool, fix_env: bool, fix_chrome: bool, json: bool) -> anyhow::Result<i32> {
     let mut out: Vec<Check> = vec![];
 
     // 1. session
@@ -232,7 +233,7 @@ pub async fn run(fix: bool, fix_env: bool, json: bool) -> anyhow::Result<i32> {
                 .iter()
                 .map(|m| {
                     let (tk, d) = describe(m);
-                    let how = if tk == Toolkit::Chromium { "launch it with --force-renderer-accessibility (Chromium builds its accessibility tree lazily; seen once with VS Code: 2 nodes at first launch, 400+ with the flag)".to_string() } else { tk.hint().to_string() };
+                    let how = if tk == Toolkit::Chromium { "launch it with --force-renderer-accessibility, or run `vimvibe-core doctor --fix-chrome` and restart it (Chromium builds its accessibility tree lazily; seen once with VS Code: 2 nodes at first launch, 400+ with the flag)".to_string() } else { tk.hint().to_string() };
                     format!("{d}: {how}")
                 })
                 .collect();
@@ -319,6 +320,17 @@ pub async fn run(fix: bool, fix_env: bool, json: bool) -> anyhow::Result<i32> {
             Some("vimvibe-core pointer-setup"),
         )
     });
+
+    if fix_chrome {
+        let done = crate::chromium::fix_launchers()?;
+        out.push(check(
+            "chrome-fixed",
+            Status::Info,
+            if done.is_empty() { "No launcher needed the Chromium accessibility flag (already added, or none found)".to_string() } else { format!("Added {} to {} launcher(s)", crate::chromium::FLAG, done.len()) },
+            done.iter().map(|p| p.display().to_string()).chain(["Quit the browser completely, then start it from the menu again (a running one keeps its old flags)".to_string()]).collect(),
+            None,
+        ));
+    }
 
     // 6. persistent environment for toolkits that need a flag
     let ef = env_file();

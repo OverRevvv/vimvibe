@@ -71,12 +71,15 @@ impl Default for Mouse {
 pub struct Accessibility {
     /// Turn desktop accessibility on when the daemon starts (vimvibe can't see any app without it).
     pub enable_on_start: bool,
+    /// When vimvibe is opened over a Chromium-based app that was started without `--force-renderer-accessibility` (so it
+    /// shows nothing), offer to restart it with the flag.
+    pub offer_restart: bool,
 }
 
 impl Default for Accessibility {
     /// Accessibility is turned on at daemon start unless the user opts out.
     fn default() -> Self {
-        Accessibility { enable_on_start: true }
+        Accessibility { enable_on_start: true, offer_restart: true }
     }
 }
 

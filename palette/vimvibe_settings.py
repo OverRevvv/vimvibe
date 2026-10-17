@@ -8,7 +8,7 @@ own: label/flag theme (colours, font, sizes), panel look, excluded apps, accessi
 """
 import json, os, shutil, subprocess
 
-from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtCore import QEvent, QProcess, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QGridLayout, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFontComboBox,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
@@ -166,6 +166,7 @@ class SettingsWindow(QWidget):
         super().__init__()
         self.read_config, self.write_config, self.defaults = read_config, write_config, defaults
         self.loading = False
+        self.proc = None  # the command running in the Accessibility & setup tab
         self.setWindowTitle(f"vimvibe Settings ({PROFILE} profile)" if PROFILE else "vimvibe Settings")
         if icon_path():
             self.setWindowIcon(QIcon(icon_path()))
@@ -513,6 +514,12 @@ class SettingsWindow(QWidget):
         b3 = QPushButton("Keep it on after login"); b3.clicked.connect(lambda: self.show_cmd([core_binary(), "doctor", "--fix-env"]))
         r.addWidget(b1); r.addWidget(b2); r.addWidget(b3)
         bl.addLayout(r)
+        b5 = QPushButton("Make Chrome, Chromium, Brave, Edge and VS Code visible…")
+        b5.setToolTip("Adds --force-renderer-accessibility to their launchers (copies in ~/.local/share/applications); restart them afterwards")
+        b5.clicked.connect(lambda: self.show_cmd([core_binary(), "doctor", "--fix-chrome"]))
+        bl.addWidget(b5)
+        self.offer_restart = QCheckBox("When Chrome, Brave, Edge or an Electron app shows nothing, offer to restart it with accessibility on")
+        bl.addWidget(self.offer_restart)
         v.addWidget(box)
         box2 = QGroupBox("Pointer and keyboard (scrolling, arrow keys, right click, hover)"); pl = QVBoxLayout(box2)
         pl.addWidget(QLabel("Uses the desktop's Remote Control permission. Your desktop asks once: allow the pointer "
@@ -555,13 +562,19 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(self, "vimvibe", f"Could not run {cmd[0]}: {e}")
 
     def show_cmd(self, cmd):
-        """Run a vimvibe-core command and show its output in the tab."""
+        """Run a vimvibe-core command in the background and show its output in the tab as it arrives (the window must
+        stay responsive: some commands wait for the desktop, and one shows a consent dialog)."""
+        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
+            self.output.appendPlainText("(still running the previous command)")
+            return
         self.output.setPlainText("$ " + " ".join(cmd) + "\n")
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            self.output.appendPlainText(r.stdout + r.stderr)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            self.output.appendPlainText(str(e))
+        self.proc = QProcess(self)
+        self.proc.setProcessChannelMode(QProcess.MergedChannels)
+        self.proc.readyRead.connect(lambda: self.output.appendPlainText(bytes(self.proc.readAll()).decode(errors="replace").rstrip("\n")))
+        self.proc.errorOccurred.connect(lambda e: self.output.appendPlainText(f"could not run {cmd[0]}: {self.proc.errorString()}") if e == QProcess.FailedToStart else None)
+        self.proc.finished.connect(lambda code, _: self.output.appendPlainText(f"(finished, exit code {code})"))
+        QTimer.singleShot(120000, lambda p=self.proc: p.kill() if p.state() != QProcess.NotRunning else None)  # a command that never ends is stopped after two minutes
+        self.proc.start(cmd[0], cmd[1:])
 
     # --- load / collect / save --------------------------------------------------------
     def load(self, cfg):
@@ -626,6 +639,7 @@ class SettingsWindow(QWidget):
         self.mouse_keys.setCurrentIndex(max(0, self.mouse_keys.findData(mouse["keys"])))
         self.mouse_speed.setValue(int(mouse["speed"])); self.mouse_fast.setValue(int(mouse["fast"]))
         self.mouse_accel.setChecked(bool(mouse["accelerate"]))
+        self.offer_restart.setChecked(bool({**d["accessibility"], **cfg.get("accessibility", {})}["offer_restart"]))
         self.windows.setChecked(bool(search["windows"]))
         self.apps_search.setChecked(bool(search["apps"]))
         self.panel_labels.setChecked(bool(search["panel"]))
@@ -664,6 +678,7 @@ class SettingsWindow(QWidget):
             alphabet=self.mouse_alphabet.text().strip().lower() or self.defaults["mouse"]["alphabet"],
             keys=self.mouse_keys.currentData(), speed=self.mouse_speed.value(), fast=self.mouse_fast.value(),
             accelerate=self.mouse_accel.isChecked())
+        cfg.setdefault("accessibility", {}).update(offer_restart=self.offer_restart.isChecked())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]
         return cfg

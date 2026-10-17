@@ -81,6 +81,7 @@ DEFAULTS = {
     # key bindings: action -> "Ctrl+Space" or a list; absent = the default in vimvibe_keys.py (the table starts empty so
     # that only what the user changed is written, and later releases can improve the defaults)
     "keys": {},
+    "accessibility": {"enable_on_start": True, "offer_restart": True},  # offer_restart: ask to restart Chromium apps that show nothing
     "apps": {"exclude": []},
 }
 
