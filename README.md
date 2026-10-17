@@ -23,6 +23,7 @@ inside each split terminal; the panel lists the matches with their labels and Ct
 - [Using it](#using-it)
 - [Settings](#settings)
 - [Scrolling and arrow keys](#scrolling-and-arrow-keys)
+- [Keyboard mouse](#keyboard-mouse)
 - [Customizing keys](#customizing-keys)
 - [Excluding apps](#excluding-apps)
 - [Making apps visible](#making-apps-visible-accessibility)
@@ -114,6 +115,8 @@ you want Space + H/J/K/L arrow keys).
 | Give it keyboard focus (e.g. a text field) | **tap Ctrl twice** |
 | Act on result row *n* / just select it | **Ctrl+1…9** / **Ctrl+Shift+1…9** |
 | Move the selection | **↑ ↓**, **Tab / Shift+Tab**, **Ctrl+N / Ctrl+P**, **PageUp / PageDown**, mouse wheel |
+| Mouse grid: pick a spot on screen by typing letters | **Ctrl+G**, then two letters per zoom level, **Enter** clicks ([details](#keyboard-mouse)) |
+| Move the pointer with the keyboard | **Ctrl+M**, then hold **H J K L** (**Shift** faster, **Alt** precise), **Enter** clicks |
 | Hide / show the search panel (labels stay) | **Ctrl+Space** ([rebind it](#customizing-keys)) |
 | Clear the search, show every label again | **tap Alt** |
 | Re-read the window (after the page changed) | **Ctrl+R** |
@@ -194,6 +197,19 @@ edge_ms = 600              # how long that jump takes
 natural = false            # touchpad-style direction
 invert_horizontal = false  # swap left and right for H / L
 
+[mouse]
+enabled = true             # master switch for the keyboard mouse (grid and H J K L movement); false turns it all off
+open_in = "search"         # what vimvibe opens in: "search" or "grid"
+scope = "window"           # what the grid covers at first: "window" or "screen"
+cols = 5                   # cells per grid level
+rows = 5
+alphabet = "abcdefghijklmnopqrstuvwxyz"   # cell names are a row letter + a column letter from this
+max_depth = 4              # how many times a cell can be divided again
+keys = "hjkl"              # pointer movement keys: "hjkl" or "ijkl"
+speed = 500                # px per second
+fast = 3                   # Shift multiplies the speed by this (Alt slows it to a quarter)
+accelerate = true          # speed up while a key is held
+
 [search]
 windows = true             # offer your other open windows as results (window switching)
 apps = true                # offer installed applications as results
@@ -273,6 +289,37 @@ Your desktop shows its *Remote Control* dialog once: allow **pointer** (clicks, 
 `vimvibe doctor` shows what is allowed. (Scrolling needs the pointer part only.) Revoke it any time in **System Settings → Security & Privacy → Remote
 Control**, or delete `~/.local/state/vimvibe/pointer-token`.
 
+## Keyboard mouse
+
+Move and click the pointer without the mouse, for anything vimvibe has no label for (canvases, maps, games, video
+players). Open vimvibe as usual, then:
+
+**The grid — Ctrl+G.** The target window is divided into 5 × 5 cells named by two letters: the row letter, then the
+column letter (`aa ab ac ad ae` across the top row, `ba bb …` below). Type a cell's two letters and it fills the view and
+is divided again; keep going as deep as you like (4 times by default). Then:
+
+| Key | Does |
+|---|---|
+| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Alt+Enter** double, **Shift+Enter** middle click) |
+| **Space** | only move the pointer there, no click |
+| **Backspace** | zoom out one step (or drop a half-typed cell name) |
+| **Ctrl+Shift+G** | switch between the window and the whole screen |
+| **Ctrl+M** | continue with H J K L from here |
+| **Esc** | back to the search (a second Esc closes) |
+
+Clicking a cell with the mouse zooms into it; right click zooms out.
+
+**H J K L movement — Ctrl+M.** Hold a direction key and the pointer glides, getting faster the longer you hold; two keys
+make a diagonal. **Shift** is faster, **Alt** is precise. **Enter** clicks where the pointer is (same modifiers as above),
+**Space** leaves it there, **Esc** goes back. The page under the pointer shows hover effects as you move.
+
+Everything is customizable in **Settings → Mouse** (the `[mouse]` table above): grid size and letters, how deep a cell
+can be divided, whether the grid covers the window or the screen, speeds, the movement layout, opening vimvibe
+straight in the grid — or turn the whole feature off with *Keyboard mouse*. The keys are in **Settings → Keys**
+(`mouse_grid`, `mouse_move`, `mouse_place`, `mouse_scope`, `mouse_back`; Enter and the click variants are the same keys
+as in the search). The pointer ends where you put it and stays there. It needs the pointer permission
+([see above](#the-permission)); the grid covers the screen the window is on, and it is not available over Plasma popups.
+
 ## Customizing keys
 
 Every key the overlay reacts to can be changed in **Settings → Keys**: click *Change…* and press the combination you
@@ -298,6 +345,11 @@ row_act = ["Ctrl"]                     # + 1…9: act on that result row
 row_select = ["Ctrl+Shift"]            # + 1…9: only select it
 tap_labels = ["Alt"]                   # tap alone: clear the search, show every label (Ctrl, Alt, Shift or [] = off)
 tap_hover = ["Ctrl"]                   # tap alone: hover (twice: focus)
+mouse_grid = ["Ctrl+G"]                # keyboard mouse: the zooming grid
+mouse_move = ["Ctrl+M"]                # keyboard mouse: H J K L moves the pointer
+mouse_place = ["Space"]                # keyboard mouse: leave the pointer here, no click
+mouse_scope = ["Ctrl+Shift+G"]         # grid: window / whole screen
+mouse_back = ["Backspace"]             # grid: zoom out
 ```
 
 Limits: the global shortcuts that open and quit vimvibe are KDE shortcuts (System Settings → Shortcuts → *vimvibe*,
@@ -450,7 +502,7 @@ core/                Rust: AT-SPI reading, matching, labels, KWin bridge, daemon
   src/doctor.rs      setup check
 packaging/icons/     the icon: vimvibe.svg (edit this) and the generated PNG sizes (`python3 packaging/icons/make-icons.py`)
 palette/             Python/Qt: overlay (vimvibe_palette.py), Settings window (vimvibe_settings.py),
-                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py)
+                     shared config + theme (vimvibe_style.py), key bindings (vimvibe_keys.py, tests: test_keys.py), the mouse grid logic (vimvibe_mouse.py, tests: test_mouse.py)
 packaging/           launcher script, optional systemd user unit
 research/            design notes and measurements (start with 09, 10, 11)
 ```
@@ -466,6 +518,7 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `Elements() → json` | every element with id, label, role, screen rectangle |
 | `Activate(i)` / `ActivateId(id)` / `ActivateWith(id, action)` | act on a hit / an element; action = `click right double middle hover focus` |
 | `Refresh()` | re-read the same window |
+| `PointerMotion(dx, dy)`, `PointerAct(x, y, here, action)` | the keyboard mouse: move the pointer by whole pixels (no waiting); close the overlay, then `move`/`click`/`right`/`double`/`middle` at (x, y) or, with `here`, where the pointer is (`goto` only moves, keeping the overlay). Refused when `[mouse] enabled` is false |
 | `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEdge(dir)`, `ScrollEnd()` | park the pointer over element `id` (or the window), glide by `dx`/`dy` tenths of a wheel notch (returns at once; the glide carries on), jump to the top (`dir` -1) or bottom (1), put the pointer back after the glide |
 | `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-key mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |

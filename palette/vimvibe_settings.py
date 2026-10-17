@@ -174,6 +174,7 @@ class SettingsWindow(QWidget):
         tabs.addTab(self.general_tab(), "General")
         tabs.addTab(self.appearance_tab(), "Appearance")
         tabs.addTab(self.labels_tab(), "Labels && behaviour")
+        tabs.addTab(self.mouse_tab(), "Mouse")
         tabs.addTab(self.keys_tab(), "Keys")
         tabs.addTab(self.apps_tab(), "Excluded apps")
         tabs.addTab(self.system_tab(), "Accessibility && setup")
@@ -347,6 +348,49 @@ class SettingsWindow(QWidget):
                              "permission; arrow keys need the keyboard permission and work in KDE/Qt and GTK 3 apps "
                              "(Accessibility &amp; setup tab).</small>", textFormat=Qt.RichText, wordWrap=True))
         f.addRow(box)
+        return w
+
+    def mouse_tab(self):
+        """The keyboard mouse: master switch, the zooming grid and H J K L pointer movement."""
+        w = QWidget(); f = QFormLayout(w)
+        self.mouse_on = QCheckBox("Keyboard mouse: move and click the pointer without touching the mouse")
+        f.addRow(self.mouse_on)
+        box = QGroupBox("Options"); bf = QFormLayout(box)
+        self.mouse_widgets = [box]
+        self.mouse_open_in = QComboBox()
+        self.mouse_open_in.addItem("The search (the grid is one key away)", "search")
+        self.mouse_open_in.addItem("The mouse grid", "grid")
+        bf.addRow("vimvibe opens in:", self.mouse_open_in)
+        self.mouse_scope = QComboBox()
+        self.mouse_scope.addItem("The window vimvibe was opened over", "window")
+        self.mouse_scope.addItem("The whole screen", "screen")
+        bf.addRow("The grid covers:", self.mouse_scope)
+        self.mouse_cols = QSpinBox(); self.mouse_cols.setRange(2, 26); self.mouse_cols.setSuffix(" columns")
+        self.mouse_rows = QSpinBox(); self.mouse_rows.setRange(2, 26); self.mouse_rows.setSuffix(" rows")
+        size = QHBoxLayout(); size.addWidget(self.mouse_cols); size.addWidget(QLabel("×")); size.addWidget(self.mouse_rows); size.addStretch()
+        bf.addRow("Grid size:", size)
+        self.mouse_depth = QSpinBox(); self.mouse_depth.setRange(1, 10); self.mouse_depth.setSuffix(" times")
+        bf.addRow("A cell can be divided:", self.mouse_depth)
+        self.mouse_alphabet = QLineEdit(); self.mouse_alphabet.setPlaceholderText("abcdefghijklmnopqrstuvwxyz")
+        bf.addRow("Cell letters:", self.mouse_alphabet)
+        self.mouse_keys = QComboBox()
+        self.mouse_keys.addItem("H J K L (Vim: left, down, up, right)", "hjkl")
+        self.mouse_keys.addItem("I J K L (arrow layout: up, left, down, right)", "ijkl")
+        bf.addRow("Movement keys:", self.mouse_keys)
+        self.mouse_speed = QSpinBox(); self.mouse_speed.setRange(50, 6000); self.mouse_speed.setSingleStep(50); self.mouse_speed.setSuffix(" px / second")
+        bf.addRow("Pointer speed:", self.mouse_speed)
+        self.mouse_fast = QSpinBox(); self.mouse_fast.setRange(1, 20); self.mouse_fast.setPrefix("×")
+        bf.addRow("With Shift held:", self.mouse_fast)
+        self.mouse_accel = QCheckBox("Speed up while a key is held")
+        bf.addRow("Acceleration:", self.mouse_accel)
+        bf.addRow("", QLabel("<small>Open vimvibe, then press <b>Ctrl+G</b> for the grid: type a cell's two letters (row, then "
+                             "column) to zoom into it; the cell is divided again, as deep as you set. <b>Enter</b> clicks the "
+                             "middle of what is left, <b>Space</b> only moves the pointer there, <b>Backspace</b> zooms out. "
+                             "<b>Ctrl+M</b> moves the pointer with the direction keys (Shift faster, Alt precise). "
+                             "These keys can be changed in the Keys tab. Needs the pointer permission "
+                             "(Accessibility &amp; setup tab); not available over Plasma popups.</small>", textFormat=Qt.RichText, wordWrap=True))
+        f.addRow(box)
+        self.mouse_on.toggled.connect(box.setEnabled)
         return w
 
     def keys_tab(self):
@@ -571,6 +615,17 @@ class SettingsWindow(QWidget):
         self.scroll_smooth_ms.setEnabled(self.scroll_smooth.isChecked())
         self.scroll_natural.setChecked(bool(scroll.get("natural", False)))
         self.scroll_invert_h.setChecked(bool(scroll.get("invert_horizontal", False)))
+        mouse = {**d["mouse"], **cfg.get("mouse", {})}
+        self.mouse_on.setChecked(bool(mouse["enabled"]))
+        self.mouse_widgets[0].setEnabled(self.mouse_on.isChecked())
+        self.mouse_open_in.setCurrentIndex(max(0, self.mouse_open_in.findData(mouse["open_in"])))
+        self.mouse_scope.setCurrentIndex(max(0, self.mouse_scope.findData(mouse["scope"])))
+        self.mouse_cols.setValue(int(mouse["cols"])); self.mouse_rows.setValue(int(mouse["rows"]))
+        self.mouse_depth.setValue(int(mouse["max_depth"]))
+        self.mouse_alphabet.setText(str(mouse["alphabet"]))
+        self.mouse_keys.setCurrentIndex(max(0, self.mouse_keys.findData(mouse["keys"])))
+        self.mouse_speed.setValue(int(mouse["speed"])); self.mouse_fast.setValue(int(mouse["fast"]))
+        self.mouse_accel.setChecked(bool(mouse["accelerate"]))
         self.windows.setChecked(bool(search["windows"]))
         self.apps_search.setChecked(bool(search["apps"]))
         self.panel_labels.setChecked(bool(search["panel"]))
@@ -603,6 +658,12 @@ class SettingsWindow(QWidget):
                              fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
                              edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),
                              natural=self.scroll_natural.isChecked(), invert_horizontal=self.scroll_invert_h.isChecked())
+        cfg.setdefault("mouse", {}).update(
+            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), scope=self.mouse_scope.currentData(),
+            cols=self.mouse_cols.value(), rows=self.mouse_rows.value(), max_depth=self.mouse_depth.value(),
+            alphabet=self.mouse_alphabet.text().strip().lower() or self.defaults["mouse"]["alphabet"],
+            keys=self.mouse_keys.currentData(), speed=self.mouse_speed.value(), fast=self.mouse_fast.value(),
+            accelerate=self.mouse_accel.isChecked())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]
         return cfg

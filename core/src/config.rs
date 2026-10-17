@@ -14,6 +14,7 @@ pub struct Config {
     pub search: Search,
     pub accessibility: Accessibility,
     pub scroll: Scroll,
+    pub mouse: Mouse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +48,21 @@ impl Default for Scroll {
     /// Vim keys scroll; one notch per press gliding for 220 ms, Shift = 4×, gg / G jump over 600 ms.
     fn default() -> Self {
         Scroll { keys: "hjkl".into(), hjkl: "scroll".into(), distance: 1.0, smooth: true, smooth_ms: 220, edge_keys: true, edge_notches: 600.0, edge_ms: 600, natural: false, invert_horizontal: false, fast: 4 }
+    }
+}
+
+/// Keyboard mouse control (the grid and H J K L pointer movement). Only the master switch matters to the daemon; the
+/// grid size, alphabet and speeds are read by the overlay.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Mouse {
+    pub enabled: bool,
+}
+
+impl Default for Mouse {
+    /// On by default; turning it off makes the daemon refuse every `Pointer*` call.
+    fn default() -> Self {
+        Mouse { enabled: true }
     }
 }
 

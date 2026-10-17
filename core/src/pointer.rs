@@ -145,7 +145,7 @@ impl Pointer {
     }
 
     /// Move the pointer by (dx, dy) through the portal.
-    async fn motion(&self, dx: f64, dy: f64) -> anyhow::Result<()> {
+    pub async fn motion(&self, dx: f64, dy: f64) -> anyhow::Result<()> {
         self.rd.notify_pointer_motion(&self.session, dx, dy, NotifyPointerMotionOptions::default()).await?;
         Ok(())
     }
@@ -172,10 +172,8 @@ impl Pointer {
         Ok(last)
     }
 
-    /// Click at a screen position, then put the pointer back where the user had it (unless `restore` is false).
-    pub async fn click_at(&self, x: f64, y: f64, button: Button, count: u32, restore: bool) -> anyhow::Result<()> {
-        let origin = kwin::cursor_pos(Duration::from_millis(500)).await;
-        self.move_to(x, y).await?;
+    /// Press and release `button` `count` times where the pointer is.
+    pub async fn press(&self, button: Button, count: u32) -> anyhow::Result<()> {
         for i in 0..count {
             if i > 0 {
                 tokio::time::sleep(Duration::from_millis(60)).await;
@@ -184,6 +182,14 @@ impl Pointer {
             tokio::time::sleep(Duration::from_millis(20)).await;
             self.button(button, KeyState::Released).await?;
         }
+        Ok(())
+    }
+
+    /// Click at a screen position, then put the pointer back where the user had it (unless `restore` is false).
+    pub async fn click_at(&self, x: f64, y: f64, button: Button, count: u32, restore: bool) -> anyhow::Result<()> {
+        let origin = kwin::cursor_pos(Duration::from_millis(500)).await;
+        self.move_to(x, y).await?;
+        self.press(button, count).await?;
         if let (true, Some((ox, oy))) = (restore, origin) {
             tokio::time::sleep(Duration::from_millis(40)).await; // let the click land before the pointer leaves
             let _ = self.move_to(ox, oy).await;

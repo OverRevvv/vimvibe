@@ -11,6 +11,7 @@
 //!   ActivateWith(id, action) -> json  same with action click | right | double | middle | hover | focus
 //!   Refresh() -> json     re-read the same window (emits Opened again)
 //!   ScrollStart(id), Scroll(dx, dy), ScrollEdge(dir), ScrollEnd()   scroll the element `id` (or the window): smooth glide in tenths of a wheel notch; ScrollEdge jumps to the top (-1) / bottom (1)
+//!   PointerMotion(dx, dy), PointerAct(x, y, here, action)   keyboard mouse: move the pointer by pixels; click/move at a point (closes the overlay)
 //!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
 //! Apps listed under [apps] exclude in ~/.config/vimvibe/config.toml are never read: Trigger emits Refused instead
 //! (also emitted, with only `error`, when the focused window cannot be read).
@@ -289,6 +290,64 @@ impl Daemon {
         json!({"ok": true}).to_string()
     }
 
+    /// Move the pointer by (dx, dy) logical pixels, no questions asked and no waiting (H J K L movement calls this many
+    /// times a second; the position is not read back). Needs `pointer-setup` and `[mouse] enabled`.
+    async fn pointer_motion(&self, dx: f64, dy: f64) -> String {
+        let mut guard = match pointer_guard(&self.0).await {
+            Ok(g) => g,
+            Err(e) => return json!({"ok": false, "error": e.to_string()}).to_string(),
+        };
+        match guard.as_ref().expect("connected").motion(dx, dy).await {
+            Ok(()) => json!({"ok": true}).to_string(),
+            Err(e) => {
+                *guard = None;
+                json!({"ok": false, "error": e.to_string()}).to_string()
+            }
+        }
+    }
+
+    /// The keyboard mouse's commit: close the overlay, then `action` (`move`, `click`, `right`, `double`, `middle`) at
+    /// screen position (x, y), or where the pointer already is when `here` is set. `goto` only moves the pointer and
+    /// leaves the overlay open (the grid hands over to H J K L movement that way). The pointer stays where it ended up
+    /// (it is the point of the feature), unlike element clicks, which put it back.
+    async fn pointer_act(&self, x: f64, y: f64, here: bool, action: String, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        use crate::pointer::Button;
+        let (button, count) = match action.as_str() {
+            "move" | "goto" => (None, 0),
+            "" | "click" => (Some(Button::Left), 1),
+            "right" => (Some(Button::Right), 1),
+            "double" => (Some(Button::Left), 2),
+            "middle" => (Some(Button::Middle), 1),
+            other => return json!({"ok": false, "error": format!("unknown action '{other}' (move, click, right, double, middle)")}).to_string(),
+        };
+        let mut guard = match pointer_guard(&self.0).await {
+            Ok(g) => g,
+            Err(e) => return json!({"ok": false, "error": e.to_string()}).to_string(),
+        };
+        if action != "goto" {
+            close(&self.0, &em).await; // the app under the overlay must get the click and the keyboard back
+        }
+        let p = guard.as_ref().expect("connected");
+        let res = async {
+            if !here {
+                p.move_to(x, y).await?;
+            }
+            if let Some(b) = button {
+                tokio::time::sleep(Duration::from_millis(40)).await; // the target window is regaining focus
+                p.press(b, count).await?;
+            }
+            anyhow::Ok(())
+        }
+        .await;
+        match res {
+            Ok(()) => json!({"ok": true}).to_string(),
+            Err(e) => {
+                *guard = None;
+                json!({"ok": false, "error": e.to_string()}).to_string()
+            }
+        }
+    }
+
     /// Stop scrolling: put the pointer back where it was before `ScrollStart` (once the glide has finished).
     async fn scroll_end(&self) {
         wait_scroll_idle(&self.0).await;
@@ -508,6 +567,17 @@ async fn activate_id(sh: &Shared, id: usize, act: Act, em: &SignalEmitter<'_>) -
         }
         Err(e) => json!({"ok": false, "error": e.to_string(), "name": el.name}),
     }
+}
+
+/// The portal session for the keyboard mouse, connected on first use; refuses when `[mouse] enabled` is off. Never
+/// shows a consent dialog (that is `pointer-setup`'s job).
+async fn pointer_guard(sh: &Shared) -> anyhow::Result<tokio::sync::MutexGuard<'_, Option<crate::pointer::Pointer>>> {
+    anyhow::ensure!(config::load().mouse.enabled, "keyboard mouse control is turned off (Settings → Mouse)");
+    let mut guard = sh.pointer.lock().await;
+    if guard.is_none() {
+        *guard = Some(crate::pointer::Pointer::connect(false).await.map_err(|e| anyhow::anyhow!("pointer control needs permission: {e}"))?);
+    }
+    Ok(guard)
 }
 
 /// Pointer rung: click (or hover) at the element's centre through the RemoteDesktop portal.

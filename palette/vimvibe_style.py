@@ -65,6 +65,18 @@ DEFAULTS = {
         "natural": False,            # touchpad-style direction
         "invert_horizontal": False,  # swap left and right for H / L
     },
+    "mouse": {
+        "enabled": True,             # master switch for the keyboard mouse (the grid and H J K L movement)
+        "open_in": "search",         # what vimvibe opens in: search | grid
+        "scope": "window",           # what the grid covers at first: window | screen
+        "cols": 5, "rows": 5,        # cells per grid level
+        "alphabet": "abcdefghijklmnopqrstuvwxyz",  # letters the cell names are made of (row letter + column letter)
+        "max_depth": 4,              # how many times a cell can be divided again
+        "keys": "hjkl",              # direction keys for pointer movement: hjkl or ijkl
+        "speed": 500,                # pointer speed in px/s
+        "fast": 3,                   # Shift multiplies the speed by this (Alt slows it down to a quarter)
+        "accelerate": True,          # speed up while a key is held
+    },
     "search": {"windows": True, "apps": True, "panel": True},
     # key bindings: action -> "Ctrl+Space" or a list; absent = the default in vimvibe_keys.py (the table starts empty so
     # that only what the user changed is written, and later releases can improve the defaults)
