@@ -15,6 +15,8 @@ pub struct Config {
     pub accessibility: Accessibility,
     pub scroll: Scroll,
     pub mouse: Mouse,
+    pub behavior: Behavior,
+    pub edit: Edit,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +50,36 @@ impl Default for Scroll {
     /// Vim keys scroll; one notch per press gliding for 220 ms, Shift = 4×, gg / G jump over 600 ms.
     fn default() -> Self {
         Scroll { keys: "hjkl".into(), hjkl: "scroll".into(), distance: 1.0, smooth: true, smooth_ms: 220, edge_keys: true, edge_notches: 600.0, edge_ms: 600, natural: false, invert_horizontal: false, fast: 4 }
+    }
+}
+
+/// General overlay behaviour the daemon takes part in. `double_esc_close`: over a popup the daemon sees Esc first, and
+/// with this on (the default) it needs two presses in a row to close, like the overlay itself.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Behavior {
+    pub double_esc_close: bool,
+}
+
+impl Default for Behavior {
+    /// Esc twice closes; a single Esc only steps back or warns.
+    fn default() -> Self {
+        Behavior { double_esc_close: true }
+    }
+}
+
+/// Edit mode (see daemon.rs `edit_task`). `step`: how many arrow presses J / K send while not selecting, so one press
+/// scrolls about a wheel notch (1 = exactly one line); H / L and selecting always move one step.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Edit {
+    pub step: u32,
+}
+
+impl Default for Edit {
+    /// Three lines, like one notch of the mouse wheel.
+    fn default() -> Self {
+        Edit { step: 3 }
     }
 }
 

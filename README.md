@@ -93,7 +93,7 @@ Press **Meta+Shift+Space** in, say, Dolphin or System Settings. Then:
 
 - type `sa` → the *Save* label is selected → **Enter**
 - or type `save` → **Enter**
-- **Esc** closes it.
+- press **Esc twice** to close it (one Esc only warns; in the mouse modes it steps back first).
 
 To start vimvibe automatically, tick *Launch at login* in `vimvibe settings`.
 
@@ -105,20 +105,20 @@ you want Space + H/J/K/L arrow keys).
 
 | Do | Keys |
 |---|---|
-| Open / close | **Meta+Shift+Space** (Esc also closes) |
+| Open / close | **Meta+Shift+Space** (**Esc Esc**, two presses, also closes) |
 | Quit vimvibe completely (daemon + overlay) | **Meta+Shift+Q** (or `vimvibe stop`) |
 | Settings | **Ctrl+Shift+,** from anywhere (**Ctrl+,** while the overlay is open) |
 | Scroll | hold **Space** + **J** (down) / **K** (up) / **H** (left) / **L** (right), or **D** / **U** — scrolls the selected element, or the window; **Shift** = faster; release Space for fresh labels ([details](#scrolling-and-arrow-keys)) |
 | Arrow keys in the app | hold **Space** + **Ctrl** + **H J K L** — ← ↓ ↑ → (needs the keyboard permission); keep Space held and press H J K L |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
 | Right click / double click / middle click | **Ctrl+Enter** / **Alt+Enter** / **Shift+Enter** |
-| Move the pointer onto it (hover) | **tap Ctrl** |
-| Give it keyboard focus (e.g. a text field) | **tap Ctrl twice** |
+| Move the pointer onto it (hover) | off by default (bind `tap_hover` in Settings → Keys, e.g. a tapped Ctrl) |
+| Give it keyboard focus (e.g. a text field) | the same key, tapped twice |
 | Act on result row *n* / just select it | **Ctrl+1…9** / **Ctrl+Shift+1…9** |
 | Move the selection | **↑ ↓**, **Tab / Shift+Tab**, **Ctrl+N / Ctrl+P**, **PageUp / PageDown**, mouse wheel |
 | Mouse grid: pick a spot on screen by typing letters | **Ctrl+G**, then two letters per zoom level, **Enter** clicks ([details](#keyboard-mouse)) |
 | Move the pointer with the keyboard | **Ctrl+M**, then hold **H J K L** (**Shift** faster, **Alt** precise), **Enter** clicks |
-| Hide / show the search panel (labels stay) | **Ctrl+Space** ([rebind it](#customizing-keys)) |
+| Hide / show the search panel (labels stay) | **Space** while the search is empty (or while the panel is hidden), or **Ctrl+Space** any time ([rebind it](#customizing-keys)). The choice is remembered: a hidden panel stays hidden on the next opens until you bring it back |
 | Clear the search, show every label again | **tap Alt** |
 | Re-read the window (after the page changed) | **Ctrl+R** |
 | Switch to another window | type its app or title (e.g. `konsole`) → **Enter** |
@@ -128,6 +128,10 @@ you want Space + H/J/K/L arrow keys).
 | Click something on the taskbar / panel | its buttons, tasks and tray icons are labelled in every window |
 | Close / maximize / minimize the window | its title-bar buttons have labels too (`CW`, `MA`, `MW`) |
 | Mouse | click a label or a row to activate it; click anywhere else to close |
+
+While vimvibe is up, **no key reaches the app below it**: the overlay (or, over a popup, the daemon's keystroke
+listener) takes every key, with or without Ctrl / Alt, so nothing typed can change what you were working in. Only the
+desktop's own Super-key shortcuts still work. Copy, paste and clipboard history are in [Keyboard mouse](#keyboard-mouse).
 
 Search tips (as in Shortcat): one or two words beat long queries; add a role word to narrow results — `btn`,
 `button`, `link`, `check`, `radio`, `tab`, `menu`, `field` (`save btn`). While you type, only labels that start
@@ -170,7 +174,8 @@ rows = 9                   # result rows shown (Ctrl+1..9 reach the first nine)
 panel_font_size = 0        # points; 0 = automatic
 hint_line = true
 hide_panel_until_typing = false   # labels only until you type (Shortcat's "hide query pane")
-start_hidden = false       # open with the panel hidden; the toggle_panel key (Ctrl+Space) shows it
+start_hidden = false       # open with the panel hidden; the toggle_panel key (Space / Ctrl+Space) shows it
+remember_panel = true      # a panel you hid stays hidden on the next opens (the state is kept in ~/.local/state/vimvibe/ui-state.json)
 dim = 0                    # darken the screen behind the labels, percent 0–60
 
 [hints]
@@ -181,6 +186,7 @@ auto_activate = false      # true: a fully typed label clicks at once (Vimium-st
 [behavior]
 continuous = false         # come back after each click
 continuous_delay_ms = 500
+double_esc_close = true    # Esc must be pressed twice to close vimvibe (one Esc only steps back or warns)
 
 [keys]                     # only what you changed is written; see "Customizing keys"
 toggle_panel = ["Ctrl+Space"]
@@ -198,9 +204,16 @@ edge_ms = 600              # how long that jump takes
 natural = false            # touchpad-style direction
 invert_horizontal = false  # swap left and right for H / L
 
+[edit]
+step = 3                  # edit mode: arrow presses per J / K while not selecting
+
+[clipboard]
+enabled = true             # copy / paste keys and the history picker (Ctrl+Shift+H)
+
 [mouse]
 enabled = true             # master switch for the keyboard mouse (grid and H J K L movement); false turns it all off
 open_in = "search"         # what vimvibe opens in: "search" or "grid"
+remember_mode = false      # instead, open in the mode used last (search, grid or H J K L movement); off by default
 scope = "window"           # what the grid covers at first: "window" or "screen"
 cols = 5                   # cells per grid level
 rows = 5
@@ -250,7 +263,7 @@ config):
 
 | Setting | What it does |
 |---|---|
-| Space + H J K L | **Scroll** (default) or **Arrow keys**; Ctrl swaps to the other one |
+| Space + H J K L | **Scroll** (default) or **Arrow keys** (hides the overlay while Space is held); Ctrl swaps to the other one |
 | Direction keys | H J K L (Vim) or I J K L (I up, K down, J left, L right) |
 | Scroll distance | mouse-wheel notches per press (default 1; about 3 lines) |
 | With Shift held | the multiplier (default ×4) |
@@ -306,18 +319,42 @@ is divided again; keep going as deep as you like (4 times by default). Then:
 | **Space** | only move the pointer there, no click |
 | **Backspace** | zoom out one step (or drop a half-typed cell name) |
 | **Ctrl+Shift+G** | switch between the window and the whole screen |
+| **↑ ↓ ← →** (or Page Up / Down) | scroll what is under the grid's middle, without leaving the grid (**Shift** = further) |
 | **Ctrl+M** | continue with H J K L from here |
-| **Esc** | back to the search (a second Esc closes) |
+| **Esc** | leave the grid and carry on with H J K L movement from where the grid ended (no Ctrl+M needed) |
 
 Clicking a cell with the mouse zooms into it; right click zooms out.
 
 **H J K L movement — Ctrl+M.** Hold a direction key and the pointer glides, getting faster the longer you hold; two keys
 make a diagonal. **Shift** is faster, **Alt** is precise. **Enter** clicks where the pointer is (same modifiers as above),
-**Space** leaves it there, **Esc** goes back. The page under the pointer shows hover effects as you move.
+**Space** leaves it there. **↑ ↓ ← →**, Page Up / Down, **Space + D / U** or **D / U** scroll what is under the pointer without leaving the mode. Holding **Space** and pressing **H J K L** scrolls ← ↓ ↑ → and the overlay stays (set *Space + H J K L* to "Arrow keys" in Settings to send real arrow keys instead; those hide the overlay while Space is held); a plain Space tap still leaves the pointer. **Esc** goes back to the search, and a second **Esc Esc** closes vimvibe. The page under the pointer shows hover effects as you move.
+
+**Edit mode (switched off for now — no key starts it; the `edit_mode` binding is commented out in `vimvibe_keys.py`).** Like Vimium, for every app: vimvibe hands the keyboard back
+to the app and takes a few plain keys system-wide (through KWin) until you leave, turning them into real keys:
+
+| Key | Sends to the app |
+|---|---|
+| **H J K L** | ← ↓ ↑ → (arrow keys scroll pages, lists and move the caret). J / K send 3 arrows (about a wheel notch) unless selecting: `[edit] step`, or type a number first (**5 J** = 5 presses) |
+| **Shift+J / Shift+K** | Page Down / Page Up |
+| **Shift+H / Shift+L** | a word back / forward (Ctrl+←/→) |
+| **U / D** | Home / End (top / bottom) |
+| **V** | start / stop selecting: the movement keys then select (Shift is held) |
+| **Y** | copy (Ctrl+C); this also ends the selection |
+| **P** | paste (Ctrl+V) |
+| **Esc** or **I** | leave edit mode |
+
+A banner shows the mode; Meta+Shift+Space also ends it, and it ends by itself after 2 minutes without a key. It needs the
+keyboard permission (`vimvibe-core pointer-setup`) and KDE. A key press is one arrow press: holding a key does not repeat.
+Selecting works where Shift+arrows select in the app (text fields, editors, browsers with caret browsing).
+
+**Clipboard history — Ctrl+Shift+H** (anywhere in vimvibe) lists Klipper's history, newest first: type to filter,
+**Enter** or **Ctrl+1…9** pastes the entry, **Esc** closes the picker only. In the search, **Ctrl+Y** copies the selected
+result's text and **Ctrl+Shift+V** clicks it and pastes the clipboard into it. Turn the clipboard keys off with
+*Clipboard* in Settings → Mouse (`[clipboard] enabled`). Clipboard contents are never logged or stored by vimvibe.
 
 Everything is customizable in **Settings → Mouse** (the `[mouse]` table above): grid size and letters, how deep a cell
 can be divided, whether the grid covers the window or the screen, speeds, the movement layout, opening vimvibe
-straight in the grid — or turn the whole feature off with *Keyboard mouse*. The keys are in **Settings → Keys**
+straight in the grid, or in whichever mode you used last — or turn the whole feature off with *Keyboard mouse*. The keys are in **Settings → Keys**
 (`mouse_grid`, `mouse_move`, `mouse_place`, `mouse_scope`, `mouse_back`; Enter and the click variants are the same keys
 as in the search). The pointer ends where you put it and stays there. It needs the pointer permission
 ([see above](#the-permission)); the grid covers the screen the window is on, and it is not available over Plasma popups.
@@ -331,7 +368,7 @@ possible by hand in `[keys]`; a value is a string or a list, and an empty list u
 
 ```toml
 [keys]
-toggle_panel = ["Ctrl+Space"]          # hide / show the search panel (labels and typing keep working)
+toggle_panel = ["Space", "Ctrl+Space"] # hide / show the search panel (labels and typing keep working); plain Space only acts while the search is empty
 click = ["Return", "Enter"]
 right_click = ["Ctrl+Return"]
 double_click = ["Alt+Return"]
@@ -346,7 +383,7 @@ page_up = ["PgUp"]
 row_act = ["Ctrl"]                     # + 1…9: act on that result row
 row_select = ["Ctrl+Shift"]            # + 1…9: only select it
 tap_labels = ["Alt"]                   # tap alone: clear the search, show every label (Ctrl, Alt, Shift or [] = off)
-tap_hover = ["Ctrl"]                   # tap alone: hover (twice: focus)
+tap_hover = []                         # tap alone: hover (twice: focus)
 mouse_grid = ["Ctrl+G"]                # keyboard mouse: the zooming grid
 mouse_move = ["Ctrl+M"]                # keyboard mouse: H J K L moves the pointer
 mouse_place = ["Space"]                # keyboard mouse: leave the pointer here, no click
@@ -357,7 +394,7 @@ mouse_back = ["Backspace"]             # grid: zoom out
 Limits: the global shortcuts that open and quit vimvibe are KDE shortcuts (System Settings → Shortcuts → *vimvibe*,
 linked from the Keys tab). Space + H J K L / D / U follow physical key positions (they are also read by the daemon);
 choose between the Vim and the arrow layout in *Labels & behaviour*. Over the start menu and other popups vimvibe can't
-see most Ctrl/Alt combinations, so the keys there keep their defaults (Ctrl+Space, hide / show the panel, is the one exception).
+see most Ctrl/Alt combinations, so the keys there keep their defaults (Ctrl+Space, hide / show the panel, is the one exception; Esc must be pressed twice there too).
 
 ## Excluding apps
 
@@ -519,7 +556,7 @@ Checks before a pull request (details and conventions in [CONTRIBUTING.md](CONTR
 ```bash
 cargo test   --release --manifest-path core/Cargo.toml
 cargo clippy --release --manifest-path core/Cargo.toml
-(cd palette && python3 -m unittest test_keys test_mouse)
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay)
 ```
 
 ### D-Bus API
@@ -536,7 +573,11 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `RestartWithAccessibility(pid)` | restart a Chromium-based app (only a main process that lacks `--force-renderer-accessibility`) with the flag, restoring its session, and fix its launchers |
 | `PointerMotion(dx, dy)`, `PointerAct(x, y, here, action)` | the keyboard mouse: move the pointer by whole pixels (no waiting); close the overlay, then `move`/`click`/`right`/`double`/`middle` at (x, y) or, with `here`, where the pointer is (`goto` only moves, keeping the overlay). Refused when `[mouse] enabled` is false |
 | `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEdge(dir)`, `ScrollEnd()` | park the pointer over element `id` (or the window), glide by `dx`/`dy` tenths of a wheel notch (returns at once; the glide carries on), jump to the top (`dir` -1) or bottom (1), put the pointer back after the glide |
-| `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-key mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |
+| `EditStart()` / `EditEnd()` | edit mode: take H J K L, U / D, V, Y, P, Esc / I system-wide (KWin shortcuts) and turn them into arrows, Home / End, selecting, Ctrl+C / V; emits `EditMode(visual)` |
+| `PointerHold(down)` | hold / release the left button |
+| `SendKeys(combo)` | close the overlay, then press `ctrl+c`, `ctrl+v`... in the window below |
+| `PointerScroll(dx, dy, x, y, here)` | scroll from the keyboard-mouse modes: move the pointer to (x, y) first unless `here`, then glide `dx`/`dy` tenths of a wheel notch; the pointer stays where it is |
+| `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-edit mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |
 | signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()`, `Key(json)`, `OpenSettings()` | |
 

@@ -40,11 +40,8 @@ cargo build --release --manifest-path core/Cargo.toml
 TARGET="${CARGO_TARGET_DIR:-core/target}"
 
 install -Dm755 "$TARGET/release/vimvibe-core" "$BIN/vimvibe-core"
-install -Dm644 palette/vimvibe_palette.py "$SHARE/vimvibe_palette.py"
-install -Dm644 palette/vimvibe_settings.py "$SHARE/vimvibe_settings.py"
-install -Dm644 palette/vimvibe_style.py "$SHARE/vimvibe_style.py"
-install -Dm644 palette/vimvibe_keys.py "$SHARE/vimvibe_keys.py"
-install -Dm644 palette/vimvibe_mouse.py "$SHARE/vimvibe_mouse.py"
+# every palette module (a missing one stops the overlay at import), not a hand-kept list
+for f in palette/vimvibe_*.py; do install -Dm644 "$f" "$SHARE/$(basename "$f")"; done
 install -Dm644 packaging/icons/vimvibe.svg "$SHARE/vimvibe.svg"   # for the overlay's and Settings' window icon
 sed -e "s|@CORE@|$BIN/vimvibe-core|" -e "s|@PALETTE_DIR@|$SHARE|" packaging/vimvibe > "$BIN/vimvibe"
 chmod 755 "$BIN/vimvibe"

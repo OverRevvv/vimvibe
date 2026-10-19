@@ -94,7 +94,7 @@ Run these before you open a pull request:
 ```bash
 cargo test   --release --manifest-path core/Cargo.toml     # Rust unit tests
 cargo clippy --release --manifest-path core/Cargo.toml     # must stay free of warnings
-(cd palette && python3 -m unittest test_keys test_mouse)   # Python logic tests
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay)   # Python logic tests
 ```
 
 - Unit tests cover the logic that does not need a desktop (matching, labels, key tables, the mouse grid, command-line
@@ -123,7 +123,7 @@ core/src/
 palette/
   vimvibe_palette.py   the overlay            vimvibe_settings.py   the Settings window
   vimvibe_style.py     config, defaults, theme  vimvibe_keys.py      rebindable keys (tests: test_keys.py)
-  vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)
+  vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)   vimvibe_clip.py  clipboard history (Klipper) and set-clipboard   test_overlay.py  overlay key behaviour, headless
 packaging/       launcher script, systemd user unit, icons      install.sh   installer / upgrader / --uninstall
 docs/            screenshots used by the README                 research/    design notes and measurements
 ```

@@ -157,6 +157,12 @@ impl Pointer {
         Ok(())
     }
 
+    /// Hold the left button down (`down`) or let it go: the keyboard mouse's text selection (press, move the pointer
+    /// with H J K L, release).
+    pub async fn hold(&self, down: bool) -> anyhow::Result<()> {
+        self.button(Button::Left, if down { KeyState::Pressed } else { KeyState::Released }).await
+    }
+
     /// Move the pointer to (x, y) in logical screen pixels. Returns where it ended up.
     pub async fn move_to(&self, x: f64, y: f64) -> anyhow::Result<(f64, f64)> {
         let mut last = kwin::cursor_pos(Duration::from_millis(500)).await.ok_or_else(|| anyhow::anyhow!("cannot read the cursor position from KWin"))?;
