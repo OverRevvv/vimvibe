@@ -77,6 +77,10 @@ git clone <this repo> vimvibe && cd vimvibe
 | `~/.local/share/icons/hicolor/…/vimvibe.*` | the icon (SVG + 16–512 px PNGs) |
 | `~/.local/share/applications/vimvibe.desktop` | the "vimvibe Settings" entry in your app menu |
 
+**No Rust?** Download `vimvibe-<version>-linux-x86_64.tar.gz` from the releases page, unpack it and run its `./install.sh`:
+it ships the compiled core, so only Python 3, PySide6 and `layer-shell-qt` (from your distro) are needed. Maintainers
+build it with `packaging/make-tarball.sh`; pushing a `v*` tag builds and publishes it through GitHub Actions.
+
 Make sure `~/.local/bin` is on your `PATH` (Fedora has it by default). Uninstall with `./install.sh --uninstall`
 (your settings in `~/.config/vimvibe/` are kept).
 

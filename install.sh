@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build vimvibe and install it for the current user (no root needed):
+# Build vimvibe (or, from a release tarball, use the shipped binary) and install it for the current user (no root needed):
 #   ~/.local/bin/vimvibe-core        the Rust core / daemon
 #   ~/.local/bin/vimvibe             launcher (start | stop | settings | doctor | ...)
 #   ~/.local/share/vimvibe/          the overlay and Settings window (Python + PySide6)
@@ -20,8 +20,12 @@ if [ "${1:-}" = "--uninstall" ]; then
   exit 0
 fi
 
+# a release tarball ships the compiled core next to this script: then no Rust is needed and nothing is built
+PREBUILT=""
+[ -x ./vimvibe-core ] && PREBUILT=./vimvibe-core
+
 missing=0
-command -v cargo >/dev/null || { echo "missing: Rust (cargo). Install from https://rustup.rs or: sudo dnf install cargo"; missing=1; }
+[ -n "$PREBUILT" ] || command -v cargo >/dev/null || { echo "missing: Rust (cargo). Install from https://rustup.rs or: sudo dnf install cargo"; missing=1; }
 python3 -c "import PySide6" 2>/dev/null || { echo "missing: PySide6. Fedora: sudo dnf install python3-pyside6   (others: pip install --user PySide6)"; missing=1; }
 command -v gdbus >/dev/null || { echo "missing: gdbus (glib2). Fedora: sudo dnf install glib2"; missing=1; }
 [ "$missing" = 0 ] || exit 1
@@ -35,11 +39,15 @@ if [ -x "$BIN/vimvibe" ] && [ -n "$(busctl --user status org.vimvibe.Daemon 2>/d
   VIMVIBE_PROFILE= "$BIN/vimvibe" stop >/dev/null 2>&1 || true
 fi
 
-echo "building the core (release)…"
-cargo build --release --manifest-path core/Cargo.toml
-TARGET="${CARGO_TARGET_DIR:-core/target}"
+if [ -n "$PREBUILT" ]; then
+  CORE_BIN="$PREBUILT"
+else
+  echo "building the core (release)…"
+  cargo build --release --manifest-path core/Cargo.toml
+  CORE_BIN="${CARGO_TARGET_DIR:-core/target}/release/vimvibe-core"
+fi
 
-install -Dm755 "$TARGET/release/vimvibe-core" "$BIN/vimvibe-core"
+install -Dm755 "$CORE_BIN" "$BIN/vimvibe-core"
 # every palette module (a missing one stops the overlay at import), not a hand-kept list
 for f in palette/vimvibe_*.py; do install -Dm644 "$f" "$SHARE/$(basename "$f")"; done
 install -Dm644 packaging/icons/vimvibe.svg "$SHARE/vimvibe.svg"   # for the overlay's and Settings' window icon
