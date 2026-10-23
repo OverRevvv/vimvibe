@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build the tarball
-        run: packaging/make-tarball.sh
+        run: bash packaging/make-tarball.sh
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
