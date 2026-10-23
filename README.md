@@ -213,6 +213,10 @@ enabled = true             # copy / paste keys and the history picker (Ctrl+Shif
 [mouse]
 enabled = true             # master switch for the keyboard mouse (grid and H J K L movement); false turns it all off
 open_in = "search"         # what vimvibe opens in: "search" or "grid"
+fallback_grid = true       # an app with nothing to label opens in the mouse grid
+ocr = true                 # ...after labelling its on-screen text with OCR (spectacle + tesseract)
+screen_width = 0           # logical screen width, only for scaled displays (0 = 1:1)
+stay_after_click = true    # a click from the grid / H J K L movement keeps the mode open (leave: Esc Esc or Meta+Shift+Space)
 remember_mode = false      # instead, open in the mode used last (search, grid or H J K L movement); off by default
 scope = "window"           # what the grid covers at first: "window" or "screen"
 cols = 5                   # cells per grid level
@@ -315,7 +319,7 @@ is divided again; keep going as deep as you like (4 times by default). Then:
 
 | Key | Does |
 |---|---|
-| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Alt+Enter** double, **Shift+Enter** middle click) |
+| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Alt+Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
 | **Space** | only move the pointer there, no click |
 | **Backspace** | zoom out one step (or drop a half-typed cell name) |
 | **Ctrl+Shift+G** | switch between the window and the whole screen |
@@ -328,6 +332,19 @@ Clicking a cell with the mouse zooms into it; right click zooms out.
 **H J K L movement — Ctrl+M.** Hold a direction key and the pointer glides, getting faster the longer you hold; two keys
 make a diagonal. **Shift** is faster, **Alt** is precise. **Enter** clicks where the pointer is (same modifiers as above),
 **Space** leaves it there. **↑ ↓ ← →**, Page Up / Down, **Space + D / U** or **D / U** scroll what is under the pointer without leaving the mode. Holding **Space** and pressing **H J K L** scrolls ← ↓ ↑ → and the overlay stays (set *Space + H J K L* to "Arrow keys" in Settings to send real arrow keys instead; those hide the overlay while Space is held); a plain Space tap still leaves the pointer. **Esc** goes back to the search, and a second **Esc Esc** closes vimvibe. The page under the pointer shows hover effects as you move.
+
+**Text fields, like Vimium.** In the search, **Ctrl+I** shows only the text fields of the window (the query `field`);
+press it again for the next one, **Enter** focuses it. In the pointer movement, **Ctrl+I** clicks where the pointer is
+and lets you type. In both cases vimvibe steps aside so the app gets every key, takes **Esc** system-wide (a KWin
+shortcut) and opens again over the window when you press it. If you go to another window instead, Esc is given back
+within a second. Activating any text field from the search does the same. (Terminals and combo boxes are left out: Esc
+belongs to them.)
+
+**Apps with nothing to label** (Spotify, games, apps without an accessibility tree) fall back in layers: the text on
+screen is read with OCR (`spectacle` + `tesseract`; `[mouse] ocr`, on when both are installed) and every phrase becomes
+a label you can type and click, ~2 s; if nothing is found, or OCR is missing, the mouse grid opens instead, which works
+in every app (`[mouse] fallback_grid`). Icon-only buttons have no text, so reach those with the grid. On a scaled
+display set `[mouse] screen_width` to the logical screen width so OCR coordinates line up.
 
 **Edit mode (switched off for now — no key starts it; the `edit_mode` binding is commented out in `vimvibe_keys.py`).** Like Vimium, for every app: vimvibe hands the keyboard back
 to the app and takes a few plain keys system-wide (through KWin) until you leave, turning them into real keys:
@@ -573,6 +590,7 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `RestartWithAccessibility(pid)` | restart a Chromium-based app (only a main process that lacks `--force-renderer-accessibility`) with the flag, restoring its session, and fix its launchers |
 | `PointerMotion(dx, dy)`, `PointerAct(x, y, here, action)` | the keyboard mouse: move the pointer by whole pixels (no waiting); close the overlay, then `move`/`click`/`right`/`double`/`middle` at (x, y) or, with `here`, where the pointer is (`goto` only moves, keeping the overlay). Refused when `[mouse] enabled` is false |
 | `ScrollStart(id)`, `Scroll(dx, dy)`, `ScrollEdge(dir)`, `ScrollEnd()` | park the pointer over element `id` (or the window), glide by `dx`/`dy` tenths of a wheel notch (returns at once; the glide carries on), jump to the top (`dir` -1) or bottom (1), put the pointer back after the glide |
+| `InsertStart()` | insert mode: take Esc system-wide until pressed (then vimvibe reopens) or the focus moves to another window |
 | `EditStart()` / `EditEnd()` | edit mode: take H J K L, U / D, V, Y, P, Esc / I system-wide (KWin shortcuts) and turn them into arrows, Home / End, selecting, Ctrl+C / V; emits `EditMode(visual)` |
 | `PointerHold(down)` | hold / release the left button |
 | `SendKeys(combo)` | close the overlay, then press `ctrl+c`, `ctrl+v`... in the window below |

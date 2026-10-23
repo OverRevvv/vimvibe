@@ -89,12 +89,18 @@ impl Default for Edit {
 #[serde(default)]
 pub struct Mouse {
     pub enabled: bool,
+    /// An app that exposes nothing to label opens on its window rectangle so the overlay can use the mouse grid.
+    pub fallback_grid: bool,
+    /// Label the text on screen (screenshot + tesseract) in apps that expose nothing, before the grid is used.
+    pub ocr: bool,
+    /// Logical width of the screen in pixels, to convert screenshot pixels on a scaled display; 0 = assume 1:1.
+    pub screen_width: i32,
 }
 
 impl Default for Mouse {
     /// On by default; turning it off makes the daemon refuse every `Pointer*` call.
     fn default() -> Self {
-        Mouse { enabled: true }
+        Mouse { enabled: true, fallback_grid: true, ocr: true, screen_width: 0 }
     }
 }
 

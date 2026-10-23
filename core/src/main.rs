@@ -10,6 +10,7 @@ mod keygrab;
 mod kwin;
 pub(crate) mod matcher;
 mod model;
+mod ocr;
 mod pointer;
 mod popups;
 mod scroller;

@@ -167,6 +167,7 @@ class Overlay(QWidget):
         self.flash = ""           # a short message drawn over the overlay for FLASH_MS
         self.flash_timer = QTimer(self, singleShot=True, timeout=self.clear_flash)
         self.clip = None          # the clipboard history picker while open: {"all": entries, "filter": str, "sel": int, "top": int}
+        self.last_regrab = 0.0    # time of the last keyboard take-back (see regrab_keyboard)
         self.resume_mouse = None  # "grid" / "move": the mouse mode to re-enter when the overlay reopens after arrow keys
         self.mspace_down = self.mspace_used = False  # mouse modes: Space held (a scroll chord) and whether it was used
         self.edit_visual = False  # edit mode: arrows select text (V toggles it)
@@ -253,6 +254,11 @@ class Overlay(QWidget):
                 self.reveal_labels()  # the labels pop in at once, no delay
             return
         self.open_in_mode()
+        if (self.mouse is None and not self.passive and not self.meta.get("launcher") and self.mouse_enabled()
+                and self.cfg["mouse"].get("fallback_grid", True) and int(self.meta.get("count", 9)) <= 1):
+            # the app shows vimvibe nothing to label (no accessibility tree): the mouse grid works in every app
+            self.enter_grid()
+            self.show_flash("This app exposes no elements to label: using the mouse grid (Esc leaves it)")
         if self.resume_mouse:  # back from Space + H J K L arrow keys: carry on in the mouse mode they were used in
             mode, self.resume_mouse = self.resume_mouse, None
             self.enter_move() if mode == "move" else self.enter_grid()
@@ -922,7 +928,63 @@ class Overlay(QWidget):
         self.send_keys("ctrl+v", "paste")
 
     def mouse_commit(self, action):
-        """Click (or just leave the pointer) at the grid's centre, or where H J K L put it. Closes the overlay."""
+        """Click (or just leave the pointer) at the grid's centre, or where H J K L put it. With [mouse] stay_after_click
+        (the default) the mouse mode carries on afterwards; otherwise the overlay closes."""
+        if self.mouse == "grid":
+            cx, cy = self.grid.center()
+            where = (cx + self.origin[0], cy + self.origin[1], False)
+        else:
+            where = (0.0, 0.0, True)
+        if self.cfg["mouse"].get("stay_after_click", True):
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)  # the click must reach the app, not this window
+            QTimer.singleShot(50, lambda: self.mouse_stay_done(self.call("PointerAct", *where, "stay:" + action)))
+            return
+        self.leave_mouse()
+        self.hide()
+        QTimer.singleShot(60, lambda: self.mouse_done(self.call("PointerAct", *where, action)))
+
+    def mouse_stay_done(self, res):
+        """The click of a mouse mode that stays open went out: report errors; the grid starts over from the whole
+        region for the next target (the movement mode just continues). The app was activated by the click, which the
+        deactivation handler answers by taking the keyboard back."""
+        self.mouse_done(res)
+        if self.mouse == "grid":
+            self.enter_grid()
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+
+    def event(self, ev):
+        """While a mouse mode is active, losing the keyboard (a click in the app below activates it) is answered by
+        taking it back, so the mode keeps working without interruption."""
+        if ev.type() == QEvent.WindowDeactivate and self.mouse in ("grid", "move") and self.isVisible():
+            self.stop_move()  # the key releases of held direction keys will go to the app: don't keep drifting
+            QTimer.singleShot(80, self.regrab_keyboard)
+        return super().event(ev)
+
+    def regrab_keyboard(self):
+        """Take the keyboard back after the app below was clicked (the click activated that window) by asking to be
+        activated again, with no hiding or flicker. Only while a mouse mode is still active and the overlay isn't."""
+        now = time.monotonic()
+        if now - self.last_regrab < 1.0:  # never loop if the compositor won't give the keyboard back
+            return
+        if self.mouse in ("grid", "move") and self.isVisible() and not self.isActiveWindow():
+            self.last_regrab = now
+            self.windowHandle().requestActivate()  # asking again is enough: the overlay never leaves the screen
+            self.activateWindow()
+            self.edit.setFocus()
+
+    def jump_input(self):
+        """Search: show only the text fields (the query "field"); pressed again, select the next one (Enter focuses it
+        and starts typing; Esc brings vimvibe back). Like Vimium's gi."""
+        if self.edit.text().strip().lower() != "field":
+            self.edit.setText("field")
+            if not self.hits:
+                self.show_flash("No text fields found")
+        else:
+            self.move_sel(1)
+
+    def mouse_insert(self):
+        """Pointer movement: click where the pointer is (that focuses a text field under it) and let the user type; the
+        daemon takes Esc until then and opens vimvibe again. In the grid it clicks the grid's middle."""
         if self.mouse == "grid":
             cx, cy = self.grid.center()
             where = (cx + self.origin[0], cy + self.origin[1], False)
@@ -930,7 +992,15 @@ class Overlay(QWidget):
             where = (0.0, 0.0, True)
         self.leave_mouse()
         self.hide()
-        QTimer.singleShot(60, lambda: self.mouse_done(self.call("PointerAct", *where, action)))
+        QTimer.singleShot(60, lambda: self.insert_after_click(self.call("PointerAct", *where, "click")))
+
+    def insert_after_click(self, res):
+        """The click for insert mode went out: start insert mode (Esc comes back here)."""
+        self.mouse_done(res)
+        if res and res.get("ok"):
+            ins = self.call("InsertStart")
+            if not ins or not ins.get("ok"):
+                notify("vimvibe can't return after typing", (ins or {}).get("error", "the daemon did not answer"))
 
     def mouse_done(self, res):
         """Answer to PointerAct: tell the user when it failed (no permission, feature off)."""
@@ -1048,6 +1118,8 @@ class Overlay(QWidget):
             self.open_clip()
         elif action == "edit_mode":
             self.enter_edit()
+        elif action == "mouse_insert":
+            self.mouse_insert()
         elif click:
             self.mouse_commit(click)
         elif self.mouse == "grid":
@@ -1128,6 +1200,8 @@ class Overlay(QWidget):
                 self.daemon.asyncCall("Refresh"); return True
             if action == "edit_mode":
                 self.enter_edit(); return True
+            if action == "jump_input":
+                self.jump_input(); return True
             if self.clip_enabled() and action in ("copy_text", "paste_into", "clip_history"):
                 {"copy_text": self.copy_text, "paste_into": self.paste_into, "clip_history": self.open_clip}[action](); return True
             step = {"next": 1, "prev": -1, "page_down": self.t.rows, "page_up": -self.t.rows}.get(action)
@@ -1335,11 +1409,12 @@ class Overlay(QWidget):
 
     def paint_selected(self, p):
         """Filled highlight around the selected result's element."""
-        if not self.hits:
+        if not self.hits or not self.edit.text():  # nothing typed: no element is "chosen" yet, so none is highlighted
             return
         r = self.rects.get(self.hits[self.sel]["id"])
         if r:
-            fill = QColor(self.t.selected); fill.setAlpha(80)
+            big = r.width() * r.height() > 0.25 * self.width() * self.height()  # a huge link / image: outline only
+            fill = QColor(self.t.selected); fill.setAlpha(0 if big else 80)
             p.setPen(QPen(self.t.selected, 2)); p.setBrush(fill)
             p.drawRoundedRect(r.adjusted(-2, -2, 2, 2), 4, 4)
             p.setBrush(Qt.NoBrush)

@@ -81,6 +81,10 @@ DEFAULTS = {
     "mouse": {
         "enabled": True,             # master switch for the keyboard mouse (the grid and H J K L movement)
         "open_in": "search",         # what vimvibe opens in: search | grid
+        "ocr": True,                 # label the text on screen (needs spectacle + tesseract) before the grid is used
+        "screen_width": 0,           # logical screen width, only to convert OCR pixels on a scaled display; 0 = 1:1
+        "fallback_grid": True,       # an app with nothing to label (no accessibility tree) opens in the mouse grid
+        "stay_after_click": True,    # a click made from the mouse modes keeps the mode open (leave with Esc Esc or the shortcut)
         "remember_mode": False,      # instead: open in the mode (search, grid, pointer movement) that was used last
         "scope": "window",           # what the grid covers at first: window | screen
         "cols": 5, "rows": 5,        # cells per grid level

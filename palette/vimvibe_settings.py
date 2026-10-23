@@ -367,6 +367,12 @@ class SettingsWindow(QWidget):
         self.mouse_open_in.addItem("The search (the grid is one key away)", "search")
         self.mouse_open_in.addItem("The mouse grid", "grid")
         bf.addRow("vimvibe opens in:", self.mouse_open_in)
+        self.mouse_fallback = QCheckBox("Open in the mouse grid when an app has nothing to label (Spotify, games, ...)")
+        bf.addRow("", self.mouse_fallback)
+        self.mouse_ocr = QCheckBox("Label the text on screen with OCR first (needs tesseract)")
+        bf.addRow("", self.mouse_ocr)
+        self.mouse_stay = QCheckBox("Stay in the mouse mode after a click (leave with Esc Esc or the vimvibe shortcut)")
+        bf.addRow("", self.mouse_stay)
         self.mouse_remember = QCheckBox("Instead, open in the mode I used last (search, grid or pointer movement)")
         bf.addRow("", self.mouse_remember)
         self.clip_on = QCheckBox("Clipboard: copy / paste keys and the history picker (Ctrl+Shift+H)")
@@ -646,6 +652,9 @@ class SettingsWindow(QWidget):
         self.mouse_on.setChecked(bool(mouse["enabled"]))
         self.mouse_widgets[0].setEnabled(self.mouse_on.isChecked())
         self.mouse_open_in.setCurrentIndex(max(0, self.mouse_open_in.findData(mouse["open_in"])))
+        self.mouse_fallback.setChecked(bool(mouse.get("fallback_grid", True)))
+        self.mouse_ocr.setChecked(bool(mouse.get("ocr", True)))
+        self.mouse_stay.setChecked(bool(mouse.get("stay_after_click", True)))
         self.mouse_remember.setChecked(bool(mouse.get("remember_mode", False)))
         self.edit_step.setValue(int({**d["edit"], **cfg.get("edit", {})}["step"]))
         self.clip_on.setChecked(bool({**d["clipboard"], **cfg.get("clipboard", {})}["enabled"]))
@@ -692,7 +701,7 @@ class SettingsWindow(QWidget):
                              edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),
                              natural=self.scroll_natural.isChecked(), invert_horizontal=self.scroll_invert_h.isChecked())
         cfg.setdefault("mouse", {}).update(
-            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), remember_mode=self.mouse_remember.isChecked(), scope=self.mouse_scope.currentData(),
+            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), remember_mode=self.mouse_remember.isChecked(), stay_after_click=self.mouse_stay.isChecked(), fallback_grid=self.mouse_fallback.isChecked(), ocr=self.mouse_ocr.isChecked(), scope=self.mouse_scope.currentData(),
             cols=self.mouse_cols.value(), rows=self.mouse_rows.value(), max_depth=self.mouse_depth.value(),
             alphabet=self.mouse_alphabet.text().strip().lower() or self.defaults["mouse"]["alphabet"],
             keys=self.mouse_keys.currentData(), speed=self.mouse_speed.value(), fast=self.mouse_fast.value(),

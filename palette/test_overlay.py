@@ -159,7 +159,36 @@ class OverlayKeys(unittest.TestCase):
         self.o.resume_mouse = None
         self.tap(Qt.Key_Space, text=" ")
         QTest.qWait(150)   # the commit runs once the overlay has hidden
-        self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "move")
+        self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "stay:move")
+
+    def test_mouse_modes_stay_open_after_a_click(self):
+        """Enter clicks without leaving the mouse mode (Alt+Enter double, Ctrl+Alt+Enter middle); with
+        stay_after_click off the overlay closes as before."""
+        self.o.enter_move(); self.daemon.calls.clear()
+        self.tap(Qt.Key_Return); QTest.qWait(150)
+        self.tap(Qt.Key_Return, Qt.AltModifier); QTest.qWait(150)
+        self.tap(Qt.Key_Return, Qt.ControlModifier | Qt.AltModifier); QTest.qWait(150)
+        acts = [c[1][3] for c in self.daemon.named("PointerAct")]
+        self.assertEqual(acts, ["stay:click", "stay:double", "stay:middle"]); self.assertEqual(self.o.mouse, "move")
+        self.o.enter_grid(); self.tap(Qt.Key_Return); QTest.qWait(150)
+        self.assertEqual(self.o.mouse, "grid"); self.assertEqual(len(self.o.grid.regions), 1)   # starts over from the whole region
+        self.o.cfg["mouse"]["stay_after_click"] = False
+        self.tap(Qt.Key_Return); QTest.qWait(150)
+        self.assertIsNone(self.o.mouse); self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "click")
+
+    def test_input_jump_insert_and_fallback(self):
+        """Ctrl+I in the search shows only the text fields, again selects the next; in the movement mode it clicks and
+        starts insert mode; an app with nothing to label opens in the grid."""
+        self.key(Qt.Key_I, Qt.ControlModifier, "\t")
+        self.assertEqual(self.o.edit.text(), "field")
+        self.o.hits = [{"id": 1}, {"id": 2}]; self.o.sel = 0
+        self.key(Qt.Key_I, Qt.ControlModifier, "\t"); self.assertEqual(self.o.sel, 1)
+        self.o.edit.clear(); self.o.enter_move(); self.daemon.calls.clear()
+        self.key(Qt.Key_I, Qt.ControlModifier, "\t"); QTest.qWait(150)
+        self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "click"); self.assertTrue(self.daemon.named("InsertStart"))
+        self.o.leave_mouse(); self.o.meta = {"origin": [0, 0, 800, 600], "count": 0}
+        self.o.origin = (0, 0); self.o.open_in_mode()
+        self.assertIsNone(self.o.mouse)   # (the fallback itself runs in `opened`, which needs a daemon snapshot)
 
     def test_ctrl_keys_over_a_popup_reach_the_overlay(self):
         """A Ctrl combination taken from a popup (passive mode) runs the same bindings: Ctrl+Space hides the panel."""
