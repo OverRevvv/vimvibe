@@ -4,7 +4,8 @@
 //!
 //! Two modes:
 //! - **Popup**: the overlay is shown over a popup that must keep the keyboard (Plasma's launcher, open menus); every
-//!   plain key is taken and forwarded to the overlay.
+//!   key, with or without Ctrl / Alt, is taken and forwarded to the overlay, so nothing typed while vimvibe is up can
+//!   change the popup (Super combinations are the desktop's own shortcuts and are never seen here).
 //! - **Arrows**: the overlay is hidden and the app has the keyboard again; only the physical H J K L / I keys, D / U
 //!   (scroll), Space and Esc are taken (matched by key position like Shortcat, so Dvorak/Colemak work), so the daemon can turn them
 //!   into arrow keys; everything else — including the arrow keys we send — reaches the app.
@@ -26,11 +27,9 @@ const TYPES: u32 = (1 << 0) | (1 << 1);
 /// Safety: if vimvibe dies while registered, the registry's calls to the vanished listener fail and count as "not
 /// consumed" (measured), so keys reach the apps again; the dead entry itself stays until the session ends.
 const MASKS: [u32; 8] = [0, 1, 2, 3, 16, 17, 18, 19];
-/// Popup mode also listens with Ctrl held, but takes only Ctrl+Space (hide / show the panel) and lets every other Ctrl
-/// combination through to the popup.
-const CTRL_MASKS: [u32; 8] = [4, 5, 6, 7, 20, 21, 22, 23];
-/// Arrow mode also listens with Ctrl and Alt held (Space+Ctrl+J = Ctrl+Down), so those masks are added.
-const ARROW_EXTRA: [u32; 3] = [4, 8, 12];
+/// Both modes also listen with Ctrl, Alt and Ctrl+Alt held, so those bits are added to each base mask (arrow mode:
+/// Space+Ctrl+J = Ctrl+Down; popup mode: Ctrl+A must not reach the popup either).
+const EXTRA: [u32; 3] = [4, 8, 12];
 
 pub const MODE_OFF: u8 = 0;
 pub const MODE_POPUP: u8 = 1;
@@ -55,8 +54,12 @@ pub struct Key {
     pub text: bool,
     /// Pressed (true) or released.
     pub pressed: bool,
-    /// Ctrl was held (popup mode only reports Ctrl+Space, the hide-panel key).
+    /// Ctrl was held.
     pub ctrl: bool,
+    /// Alt was held.
+    pub alt: bool,
+    /// Shift was held.
+    pub shift: bool,
     /// X keycode (physical key).
     #[serde(skip)]
     pub code: u32,
@@ -86,18 +89,14 @@ impl Listener {
         let pressed = kind == 0;
         match self.state.mode.load(Ordering::SeqCst) {
             MODE_POPUP => {
-                let ctrl = mods & 4 != 0;
-                if ctrl && code != KC_SPACE {
-                    return false; // Ctrl combinations belong to the popup
-                }
                 if pressed {
-                    let _ = self.tx.send(Key { name, text, pressed, code, ctrl });
+                    let _ = self.tx.send(Key { name, text, pressed, code, ctrl: mods & 4 != 0, alt: mods & 8 != 0, shift: mods & 1 != 0 });
                 }
-                true // the popup must not see any plain key (nor Ctrl+Space)
+                true // the popup must not see any key, plain or with Ctrl / Alt
             }
             MODE_ARROWS => {
                 if matches!(code, KC_ESC | KC_I | KC_H | KC_J | KC_K | KC_L | KC_SPACE | KC_D | KC_U) {
-                    let _ = self.tx.send(Key { name, text, pressed, code, ctrl: false });
+                    let _ = self.tx.send(Key { name, text, pressed, code, ctrl: false, alt: false, shift: false });
                     true
                 } else {
                     false // everything else (Shift, the arrow keys we send, other letters) goes to the app
@@ -116,11 +115,8 @@ pub async fn serve(conn: &zbus::Connection, tx: UnboundedSender<Key>, state: Arc
 /// Modifier masks to register for a mode.
 fn masks(mode: u8) -> Vec<u32> {
     let mut m = MASKS.to_vec();
-    if mode == MODE_POPUP {
-        m.extend(CTRL_MASKS);
-    }
-    if mode == MODE_ARROWS {
-        m.extend(MASKS.iter().flat_map(|b| ARROW_EXTRA.iter().map(move |x| b | x)));
+    if mode != MODE_OFF {
+        m.extend(MASKS.iter().flat_map(|b| EXTRA.iter().map(move |x| b | x)));
     }
     m
 }
@@ -144,7 +140,7 @@ pub async fn release(conn: &zbus::Connection, state: &State) {
     state.mode.store(MODE_OFF, Ordering::SeqCst);
     let Ok(path) = ObjectPath::try_from(PATH) else { return };
     let keys: Vec<(i32, i32, String, i32)> = vec![];
-    for mask in masks(MODE_ARROWS).into_iter().chain(CTRL_MASKS) {
+    for mask in masks(MODE_ARROWS) {
         let _ = conn.call_method(Some(DEC_DEST), DEC_PATH, Some(DEC_IFACE), "DeregisterKeystrokeListener", &(&path, &keys, mask, TYPES)).await;
     }
 }

@@ -12,7 +12,12 @@
 //!   Refresh() -> json     re-read the same window (emits Opened again)
 //!   ScrollStart(id), Scroll(dx, dy), ScrollEdge(dir), ScrollEnd()   scroll the element `id` (or the window): smooth glide in tenths of a wheel notch; ScrollEdge jumps to the top (-1) / bottom (1)
 //!   RestartWithAccessibility(pid)   restart a Chromium-based app with --force-renderer-accessibility (see chromium.rs)
-//!   PointerMotion(dx, dy), PointerAct(x, y, here, action)   keyboard mouse: move the pointer by pixels; click/move at a point (closes the overlay)
+//!   PointerMotion(dx, dy), PointerAct(x, y, here, action)   keyboard mouse: move the pointer by pixels; click/move at a point (closes the overlay, except a `stay:` action such as `stay:click`)
+//!   PointerScroll(dx, dy, x, y, here)   keyboard mouse: scroll under the pointer (after moving it to (x, y) unless `here`) without leaving the mouse mode
+//!   PointerHold(down)   keyboard mouse: hold / release the left button (drag a text selection with H J K L)
+//!   SendKeys(combo)   close the overlay, then press "ctrl+c" / "ctrl+v" ... in the window below (copy and paste)
+//!   InsertStart()   insert mode: the user is typing into a field; Esc (taken system-wide) brings vimvibe back (see `insert_task`)
+//!   EditStart() / EditEnd()   edit mode: H J K L become arrow keys in the app, U / D Home / End, V selects, Y copies, P pastes
 //!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
 //! Apps listed under [apps] exclude in ~/.config/vimvibe/config.toml are never read: Trigger emits Refused instead
 //! (also emitted, with only `error`, when the focused window cannot be read).
@@ -99,6 +104,8 @@ enum Extra {
     TitleBar(String, &'static str),
     /// Launch an application (.desktop file).
     App(std::path::PathBuf),
+    /// A phrase read off the screen by OCR: it has no accessibility object, so every action is a pointer action.
+    Ocr,
 }
 
 impl Snapshot {
@@ -137,6 +144,10 @@ struct Shared {
     scroll_origin: Mutex<Option<(f64, f64)>>,
     /// The smooth-scroll engine (scroller.rs); `scroll_task` sends what it produces.
     scroller: crate::scroller::Scroller,
+    /// Edit mode (Vimium-like): the sender that ends it while it runs (see `edit_start`).
+    edit_mode_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Insert mode (typing into a field the user focused): the sender that ends it while it waits for Esc.
+    insert_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 struct Daemon(Arc<Shared>);
@@ -307,12 +318,37 @@ impl Daemon {
         }
     }
 
+    /// Scroll from the keyboard-mouse modes: optionally move the pointer to (x, y) first (the grid's middle; `here`
+    /// keeps it where it is), then queue (dx, dy) tenths of a wheel notch on the smooth-scroll engine. Unlike
+    /// `ScrollStart`, the pointer is not put back afterwards: where the pointer ends up is the point of the mode.
+    async fn pointer_scroll(&self, dx: i32, dy: i32, x: f64, y: f64, here: bool) -> String {
+        {
+            let mut guard = match pointer_guard(&self.0).await {
+                Ok(g) => g,
+                Err(e) => return json!({"ok": false, "error": e.to_string()}).to_string(),
+            };
+            if !here {
+                if let Err(e) = guard.as_ref().expect("connected").move_to(x, y).await {
+                    *guard = None;
+                    return json!({"ok": false, "error": e.to_string()}).to_string();
+                }
+            }
+        } // the guard must be released: the scroll task locks the pointer to send the wheel events
+        queue_scroll(&self.0, dx as f64, dy as f64);
+        json!({"ok": true}).to_string()
+    }
+
     /// The keyboard mouse's commit: close the overlay, then `action` (`move`, `click`, `right`, `double`, `middle`) at
     /// screen position (x, y), or where the pointer already is when `here` is set. `goto` only moves the pointer and
     /// leaves the overlay open (the grid hands over to H J K L movement that way). The pointer stays where it ended up
     /// (it is the point of the feature), unlike element clicks, which put it back.
     async fn pointer_act(&self, x: f64, y: f64, here: bool, action: String, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         use crate::pointer::Button;
+        // "stay:click" etc.: act like "click" but leave the overlay (and the mouse mode in it) open
+        let (stay, action) = match action.strip_prefix("stay:") {
+            Some(a) => (true, a.to_string()),
+            None => (false, action),
+        };
         let (button, count) = match action.as_str() {
             "move" | "goto" => (None, 0),
             "" | "click" => (Some(Button::Left), 1),
@@ -325,7 +361,7 @@ impl Daemon {
             Ok(g) => g,
             Err(e) => return json!({"ok": false, "error": e.to_string()}).to_string(),
         };
-        if action != "goto" {
+        if action != "goto" && !stay {
             close(&self.0, &em).await; // the app under the overlay must get the click and the keyboard back
         }
         let p = guard.as_ref().expect("connected");
@@ -347,6 +383,86 @@ impl Daemon {
                 json!({"ok": false, "error": e.to_string()}).to_string()
             }
         }
+    }
+
+    /// Hold the left mouse button down (`down`) or release it, with the overlay staying open: H J K L then drag a text
+    /// selection (the keyboard mouse's visual mode).
+    async fn pointer_hold(&self, down: bool) -> String {
+        let guard = match pointer_guard(&self.0).await {
+            Ok(g) => g,
+            Err(e) => return json!({"ok": false, "error": e.to_string()}).to_string(),
+        };
+        match guard.as_ref().expect("connected").hold(down).await {
+            Ok(()) => json!({"ok": true}).to_string(),
+            Err(e) => json!({"ok": false, "error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Close the overlay, then press a key combination in the window that gets the keyboard back: "ctrl+c", "ctrl+v",
+    /// "ctrl+shift+v"... (modifiers ctrl / shift / alt, then one letter or digit). Copy and paste use it.
+    async fn send_keys(&self, combo: String, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        let Some(keysyms) = parse_combo(&combo) else {
+            return json!({"ok": false, "error": format!("can't read the key combination '{combo}'")}).to_string();
+        };
+        if let Err(e) = keyboard_session(&self.0).await {
+            return json!({"ok": false, "error": e.to_string()}).to_string();
+        }
+        close(&self.0, &em).await; // the keys go to the app below, not to the overlay
+        tokio::time::sleep(Duration::from_millis(80)).await; // the app is taking the keyboard back
+        let guard = self.0.pointer.lock().await;
+        let Some(p) = guard.as_ref() else { return json!({"ok": false, "error": "no input session"}).to_string() };
+        let res = async {
+            for k in &keysyms {
+                p.key(*k, true).await?;
+            }
+            for k in keysyms.iter().rev() {
+                p.key(*k, false).await?;
+            }
+            anyhow::Ok(())
+        }
+        .await;
+        match res {
+            Ok(()) => json!({"ok": true}).to_string(),
+            Err(e) => json!({"ok": false, "error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Start edit mode (Vimium-like, for every app): plain keys are taken system-wide and turned into keys for the
+    /// focused app: H J K L = arrows, Shift+J / K page down / up, Shift+H / L word left / right, U / D Home / End,
+    /// V starts / ends selecting (arrows then select), Y copies, P pastes; Esc or I ends the mode. Needs the keyboard
+    /// permission and KDE. The overlay must already have given the keyboard back (it shows a banner only).
+    async fn edit_start(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        if !kwin::on_kde() {
+            return json!({"ok": false, "error": "edit mode needs KDE Plasma (it takes the keys through KWin)"}).to_string();
+        }
+        if let Err(e) = keyboard_session(&self.0).await {
+            return json!({"ok": false, "error": e.to_string()}).to_string();
+        }
+        end_edit(&self.0).await; // never two at once
+        let session = match kwin::grab_keys(EDIT_KEYS).await {
+            Ok(s) => s,
+            Err(e) => return json!({"ok": false, "error": format!("could not take the keys: {e}")}).to_string(),
+        };
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        *self.0.edit_mode_stop.lock().await = Some(stop_tx);
+        tokio::spawn(edit_task(self.0.clone(), em.to_owned(), session, stop_rx));
+        json!({"ok": true}).to_string()
+    }
+
+    /// Start insert mode: vimvibe is closed and the user types into the field that now has the focus; Esc is taken
+    /// system-wide until pressed, then vimvibe opens again over the window. It also ends when another window gets the
+    /// focus, so Esc is never held back for long. Used by the overlay's "insert" key in the mouse modes; activating a
+    /// text field starts it by itself.
+    async fn insert_start(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        match begin_insert(self.0.clone(), em.to_owned()).await {
+            Ok(()) => json!({"ok": true}).to_string(),
+            Err(e) => json!({"ok": false, "error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// End edit mode without closing the overlay.
+    async fn edit_end(&self) {
+        end_edit(&self.0).await;
     }
 
     /// Restart the Chromium-based program `pid` (a browser, an Electron app) with `--force-renderer-accessibility`, and
@@ -479,6 +595,10 @@ impl Daemon {
     #[zbus(signal)]
     async fn key(emitter: &SignalEmitter<'_>, payload: &str) -> zbus::Result<()>;
 
+    /// Edit mode's state changed: `visual` is true while arrows select text. The overlay's banner shows it.
+    #[zbus(signal)]
+    async fn edit_mode(emitter: &SignalEmitter<'_>, visual: bool) -> zbus::Result<()>;
+
     /// The settings shortcut (Ctrl+Shift+,) was pressed: the UI opens its Settings window.
     #[zbus(signal)]
     async fn open_settings(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
@@ -529,7 +649,7 @@ impl Act {
 
 /// Do `act` on snapshot element `id`: close the overlay first, then window/title-bar/app results via KWin or the
 /// launcher, elements via the semantic ladder with the pointer as fallback. Returns the JSON result for the UI.
-async fn activate_id(sh: &Shared, id: usize, act: Act, em: &SignalEmitter<'_>) -> Value {
+async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'_>) -> Value {
     let (el, geometry, extra) = {
         let guard = sh.snap.lock().await;
         match guard.as_ref() {
@@ -547,6 +667,7 @@ async fn activate_id(sh: &Shared, id: usize, act: Act, em: &SignalEmitter<'_>) -
             Extra::Window(wid) => kwin::activate_window(&wid, Duration::from_millis(500)).await.map(|_| json!({"ok": true, "message": "raised window", "via": "kwin"})),
             Extra::TitleBar(wid, op) => kwin::window_op(&wid, op, Duration::from_millis(500)).await.map(|_| json!({"ok": true, "message": format!("window {op}"), "via": "kwin"})),
             Extra::App(path) => crate::apps::launch(&path).map(|_| json!({"ok": true, "message": "launched", "via": "desktop"})),
+            Extra::Ocr => pointer_action(sh, &el, geometry, act).await.map(|m| json!({"ok": true, "message": m, "via": "pointer"})),
         }
     } else {
         // normal elements: Click walks the semantic ladder, falling back to a pointer click when it asks for one;
@@ -579,6 +700,12 @@ async fn activate_id(sh: &Shared, id: usize, act: Act, em: &SignalEmitter<'_>) -
     };
     match res {
         Ok(mut v) => {
+            // focusing a text field means the user is going to type: Esc will bring vimvibe back
+            if matches!(act, Act::Click | Act::Focus) && is_input_role(&el.role) && sh.snap.lock().await.is_none() {
+                if let Err(e) = begin_insert(sh.clone(), em.to_owned()).await {
+                    eprintln!("insert mode: {e}");
+                }
+            }
             v["name"] = json!(el.name);
             v["role"] = json!(el.role);
             v["ms"] = json!(ms(t.elapsed()));
@@ -629,7 +756,6 @@ async fn pointer_action(sh: &Shared, el: &Element, geometry: Option<(i32, i32, i
     r
 }
 
-/// Release the keyboard grab if any, drop the snapshot and emit `Closed` (no-op when nothing is open).
 /// X keysyms of the arrow keys.
 const XK_LEFT: i32 = 0xff51;
 const XK_UP: i32 = 0xff52;
@@ -675,6 +801,26 @@ async fn keyboard_session(sh: &Shared) -> anyhow::Result<()> {
     *guard = Some(crate::pointer::Pointer::connect(false).await?);
     anyhow::ensure!(guard.as_ref().is_some_and(|p| p.has_keyboard()), "the desktop did not grant the keyboard");
     Ok(())
+}
+
+/// X keysyms for a combination like "ctrl+shift+v": the modifiers in the order written, then the key (a letter or
+/// digit, whose keysym is its ASCII code). None when it can't be read.
+fn parse_combo(combo: &str) -> Option<Vec<i32>> {
+    let mut out = Vec::new();
+    let parts: Vec<String> = combo.split('+').map(|p| p.trim().to_lowercase()).collect();
+    let (key, mods) = parts.split_last()?;
+    for m in mods {
+        out.push(match m.as_str() {
+            "ctrl" | "control" => 0xffe3,
+            "shift" => XK_SHIFT_L,
+            "alt" => 0xffe9,
+            _ => return None,
+        });
+    }
+    let mut chars = key.chars();
+    let c = chars.next().filter(|c| c.is_ascii_alphanumeric() && chars.next().is_none())?;
+    out.push(c as i32);
+    Some(out)
 }
 
 /// Send one arrow key (tap) to the focused window.
@@ -796,8 +942,172 @@ async fn end_arrows(sh: &Shared, em: &SignalEmitter<'_>, reopen: bool) {
     }
 }
 
+/// Roles of elements the user types into: activating one starts insert mode. Not terminals (Esc belongs to the shell
+/// or an editor in them) and not combo boxes (Esc closes their list).
+fn is_input_role(role: &str) -> bool {
+    matches!(role, "Entry" | "PasswordText" | "Text" | "DocumentText" | "SpinButton")
+}
+
+/// Stop insert mode if it runs (its task unloads the Esc grab).
+async fn end_insert(sh: &Shared) {
+    if let Some(stop) = sh.insert_stop.lock().await.take() {
+        let _ = stop.send(());
+    }
+}
+
+/// Start insert mode: take Esc system-wide (a KWin shortcut) and watch for it in `insert_task`.
+async fn begin_insert(sh: Arc<Shared>, em: SignalEmitter<'static>) -> anyhow::Result<()> {
+    anyhow::ensure!(kwin::on_kde(), "insert mode needs KDE Plasma (it takes Esc through KWin)");
+    end_insert(&sh).await;
+    let session = kwin::grab_keys(&[("esc", "Esc")]).await?;
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    *sh.insert_stop.lock().await = Some(stop_tx);
+    tokio::spawn(insert_task(sh, em, session, stop_rx));
+    Ok(())
+}
+
+/// Insert mode's life: wait for Esc (then open vimvibe over the window again), `end_insert`, or the focus moving to
+/// another window (then just hand Esc back). The window is whichever was focused when it started.
+async fn insert_task(sh: Arc<Shared>, em: SignalEmitter<'static>, mut session: kwin::Session, mut stop: tokio::sync::oneshot::Receiver<()>) {
+    // the window that has the focus when typing starts (the overlay just closed; give the app a moment to take it back)
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let start = sh.focus.lock().await.as_ref().map(|f| f.id.clone());
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut esc = false;
+    loop {
+        tokio::select! {
+            _ = &mut stop => break,
+            got = session.next_data() => { esc = got.as_deref() == Some("esc"); break }
+            _ = tick.tick() => {
+                let now = sh.focus.lock().await.as_ref().map(|f| f.id.clone());
+                if now != start {
+                    break; // the user went elsewhere: Esc is theirs again
+                }
+            }
+        }
+    }
+    session.stop().await;
+    if esc {
+        sh.insert_stop.lock().await.take();
+        open(&sh, &em).await;
+    }
+}
+
+/// The keys edit mode takes (id, KWin key sequence); Shift variants are separate shortcuts.
+const EDIT_KEYS: &[(&str, &str)] = &[
+    ("h", "H"), ("j", "J"), ("k", "K"), ("l", "L"), ("H", "Shift+H"), ("J", "Shift+J"), ("K", "Shift+K"), ("L", "Shift+L"),
+    ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("5", "5"), ("6", "6"), ("7", "7"), ("8", "8"), ("9", "9"),
+    ("u", "U"), ("d", "D"), ("v", "V"), ("y", "Y"), ("p", "P"), ("i", "I"), ("esc", "Esc"),
+];
+
+/// X keysyms edit mode sends.
+const XK_HOME: i32 = 0xff50;
+const XK_PAGE_UP: i32 = 0xff55;
+const XK_PAGE_DOWN: i32 = 0xff56;
+const XK_END: i32 = 0xff57;
+const XK_CONTROL_L: i32 = 0xffe3;
+
+/// Stop edit mode if it runs: its task unloads the KWin script, which hands the keys back to the apps.
+async fn end_edit(sh: &Shared) {
+    if let Some(stop) = sh.edit_mode_stop.lock().await.take() {
+        let _ = stop.send(());
+    }
+}
+
+/// What a key of edit mode does in the app: the key to press and the modifiers to hold, or None for the keys that
+/// control the mode itself (V, Y, P, I, Esc). `visual` holds Shift so the movement keys select text.
+fn edit_keys(id: &str, visual: bool) -> Option<(i32, Vec<i32>)> {
+    let shift = if visual { vec![XK_SHIFT_L] } else { vec![] };
+    let with_ctrl = |mut m: Vec<i32>| {
+        m.push(XK_CONTROL_L);
+        m
+    };
+    Some(match id {
+        "h" => (XK_LEFT, shift),
+        "j" => (XK_DOWN, shift),
+        "k" => (XK_UP, shift),
+        "l" => (XK_RIGHT, shift),
+        "H" => (XK_LEFT, with_ctrl(shift)),   // a word back
+        "L" => (XK_RIGHT, with_ctrl(shift)),  // a word forward
+        "J" => (XK_PAGE_DOWN, shift),
+        "K" => (XK_PAGE_UP, shift),
+        "u" => (XK_HOME, shift),
+        "d" => (XK_END, shift),
+        _ => return None,
+    })
+}
+
+/// Press `key` with `mods` held in the focused app.
+async fn press_combo(sh: &Shared, mods: &[i32], key: i32) {
+    let guard = sh.pointer.lock().await;
+    let Some(p) = guard.as_ref() else { return };
+    let res = async {
+        for m in mods {
+            p.key(*m, true).await?;
+        }
+        p.tap(key).await?;
+        for m in mods.iter().rev() {
+            p.key(*m, false).await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = res {
+        eprintln!("edit mode: sending a key failed: {e}");
+    }
+}
+
+/// Edit mode's life: take the keys, turn each press into a key (or a mode change) until Esc / I, `end_edit`, or 2
+/// minutes without a key (so forgotten edit mode can't keep eating letters), then hand the keys back and close.
+async fn edit_task(sh: Arc<Shared>, em: SignalEmitter<'static>, mut session: kwin::Session, mut stop: tokio::sync::oneshot::Receiver<()>) {
+    const IDLE: Duration = Duration::from_secs(120);
+    let mut visual = false;
+    let mut count: Option<u32> = None; // a number typed before a movement key repeats it, like Vim (3 j)
+    let mut by_user = true; // ended by Esc / I / the idle timeout (so the overlay still has to close), not by `end_edit`
+    loop {
+        let id = tokio::select! {
+            _ = &mut stop => { by_user = false; break }
+            got = tokio::time::timeout(IDLE, session.next_data()) => match got { Ok(Some(id)) => id, _ => break },
+        };
+        if let Some(n) = id.parse::<u32>().ok().filter(|n| (1..=9).contains(n)) {
+            count = Some((count.unwrap_or(0) * 10 + n).min(99));
+            continue;
+        }
+        let typed = count.take();
+        if let Some((key, mods)) = edit_keys(&id, visual) {
+            // J / K scroll by `step` lines unless selecting; a typed count wins; everything else moves one step
+            let step = if !visual && matches!(id.as_str(), "j" | "k") { config::load().edit.step.clamp(1, 20) } else { 1 };
+            for _ in 0..typed.unwrap_or(step) {
+                press_combo(&sh, &mods, key).await;
+            }
+            continue;
+        }
+        match id.as_str() {
+            "v" => {
+                visual = !visual;
+                let _ = Daemon::edit_mode(&em, visual).await;
+            }
+            "y" => {
+                press_combo(&sh, &[XK_CONTROL_L], 'c' as i32).await;
+                if visual {
+                    visual = false; // the copy ends the selection (the app keeps it highlighted)
+                    let _ = Daemon::edit_mode(&em, false).await;
+                }
+            }
+            "p" => press_combo(&sh, &[XK_CONTROL_L], 'v' as i32).await,
+            _ => break, // "i" and "esc"
+        }
+    }
+    session.stop().await; // the shortcuts go away with the script: every key reaches the app again
+    if by_user {
+        sh.edit_mode_stop.lock().await.take(); // our own stop sender (a newer edit mode's is never touched: it was stopped through it)
+        close(&sh, &em).await;
+    }
+}
+
 /// Drop the open snapshot: give back any keys grabbed through the accessibility registry, forget the window, and emit `Closed`.
 async fn close(sh: &Shared, em: &SignalEmitter<'_>) {
+    end_edit(sh).await;
     if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
         crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
     }
@@ -817,6 +1127,7 @@ async fn trigger(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
 
 /// Snapshot the focused window (plus, optionally, the list of other windows) and emit `Opened`.
 async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
+    end_insert(sh).await; // opening vimvibe by hand ends a typing session (Esc is the user's again)
     let t0 = Instant::now();
     let cfg = config::load(); // re-read every time: edits apply without a restart
     let cached = sh.focus.lock().await.clone();
@@ -854,19 +1165,25 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
             if atspi::connection::read_session_accessibility().await.ok() == Some(false) {
                 anyhow::bail!("Desktop accessibility is off, so no app shows its buttons. Run `vimvibe doctor --fix`, then restart the apps you want to use.");
             }
-            let win = target_window(&sh.a11y, None, focus.as_ref())
-                .await?
-                .ok_or_else(|| match &focus {
-                    Some(f) => anyhow::anyhow!("{} is not visible to accessibility: restart it (accessibility must be on before an app starts; Chrome/Electron also need --force-renderer-accessibility). Run `vimvibe doctor`.", f.class),
-                    None => anyhow::anyhow!("no target window found (is accessibility enabled, and was the app started after enabling it?)"),
-                })?;
-            if let Some(rule) = cfg.apps.excluded(&win.app, None, None) {
-                return Ok(json!({"excluded": rule, "error": format!("{} is excluded in {}", win.app, config::path().display())}));
+            let found = target_window(&sh.a11y, None, focus.as_ref()).await?;
+            match (found, focus.as_ref()) {
+                (Some(win), _) => {
+                    if let Some(rule) = cfg.apps.excluded(&win.app, None, None) {
+                        return Ok(json!({"excluded": rule, "error": format!("{} is excluded in {}", win.app, config::path().display())}));
+                    }
+                    let t_win = t0.elapsed();
+                    let opts = Opts { include_hidden: false, timeout: sh.timeout, max_nodes: 50_000, with_actions: false };
+                    let ((els, truncated), via) = find_elements(&sh.a11y, &win, &opts, Strategy::Auto).await;
+                    (els, truncated, via, win.app, win.title, win.geometry, t_win)
+                }
+                // an app that accessibility can't see (Spotify, games, ...): open on KWin's window rectangle with no
+                // elements, so the overlay falls back to the mouse grid, which works in every app
+                (None, Some(f)) if cfg.mouse.enabled && cfg.mouse.fallback_grid && f.w > 0 => {
+                    (vec![], false, "fallback", f.class.clone(), f.caption.clone(), Some((f.x, f.y, f.w, f.h)), t0.elapsed())
+                }
+                (None, Some(f)) => anyhow::bail!("{} is not visible to accessibility: restart it (accessibility must be on before an app starts; Chrome/Electron also need --force-renderer-accessibility). Run `vimvibe doctor`.", f.class),
+                (None, None) => anyhow::bail!("no target window found (is accessibility enabled, and was the app started after enabling it?)"),
             }
-            let t_win = t0.elapsed();
-            let opts = Opts { include_hidden: false, timeout: sh.timeout, max_nodes: 50_000, with_actions: false };
-            let ((els, truncated), via) = find_elements(&sh.a11y, &win, &opts, Strategy::Auto).await;
-            (els, truncated, via, win.app, win.title, win.geometry, t_win)
         };
         // A Chromium-based app started without the accessibility flag shows no elements at all; no signal makes it
         // build them later, so say so (the UI offers a restart) instead of opening an empty overlay.
@@ -926,8 +1243,29 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
         }
         // An open menu closes when the overlay takes the keyboard, like Plasma's popups: use the passive overlay.
         let popup_mode = popup_mode || any_menu_open;
+        // Last layers before the grid: an app that gave no elements (fallback) is read off the screen with OCR, and the
+        // phrases become clickable labels. They carry `Extra::Ocr` because they have no accessibility object.
+        let mut via = via;
+        let ocr_start = els.len();
+        if els.is_empty() && !popup_mode && cfg.mouse.enabled && cfg.mouse.ocr && via == "fallback" && crate::ocr::available() {
+            if let Some(g) = geometry.filter(|g| g.2 > 0) {
+                let sw = Some(cfg.mouse.screen_width).filter(|w| *w > 0);
+                match crate::ocr::read_window(g, sw, &win_app, &win_title, Duration::from_secs(8)).await {
+                    Ok(found) if !found.is_empty() => {
+                        els = found;
+                        via = "ocr";
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("ocr: {e}"),
+                }
+            }
+        }
+        let ocr_range = ocr_start..els.len();
         let n_elements = els.len();
         let mut extra = std::collections::HashMap::new();
+        for i in ocr_range {
+            extra.insert(i, Extra::Ocr);
+        }
         // the target window's title-bar buttons (KWin draws them, so they are not in the app's tree)
         if let (Some(f), Some(_)) = (&focus, geometry) {
             for b in crate::decor::buttons(f) {
@@ -1063,6 +1401,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         menus,
         scroll_origin: Mutex::new(None),
         scroller: Default::default(),
+        edit_mode_stop: Mutex::new(None),
+        insert_stop: Mutex::new(None),
         keys: Default::default(),
     });
     let conn = zbus::connection::Builder::session()?
@@ -1087,6 +1427,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         let (sh2, em2) = (sh.clone(), em.clone());
         tokio::spawn(async move {
             const IDLE: Duration = Duration::from_secs(60); // never hold the keyboard longer than this without a key
+            const DOUBLE_ESC: Duration = Duration::from_millis(700); // the second Esc must follow within this
+            let mut last_esc: Option<std::time::Instant> = None;
             loop {
                 let k = if sh2.grabbed.load(Relaxed) {
                     match tokio::time::timeout(IDLE, krx.recv()).await {
@@ -1112,14 +1454,25 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
                 } else if !k.pressed {
                     // popup mode forwards presses only
                 } else if k.name == "Escape" {
-                    close(&sh2, &em2).await;
+                    // with double Esc on, the first press is passed to the overlay (it shows "press Esc again")
+                    let again = last_esc.take().is_some_and(|t| t.elapsed() <= DOUBLE_ESC);
+                    if again || !config::load().behavior.double_esc_close {
+                        close(&sh2, &em2).await;
+                    } else {
+                        last_esc = Some(std::time::Instant::now());
+                        let _ = Daemon::key(&em2, &serde_json::to_string(&k).unwrap_or_default()).await;
+                    }
                 } else {
+                    last_esc = None;
                     let _ = Daemon::key(&em2, &serde_json::to_string(&k).unwrap_or_default()).await;
                 }
             }
         });
     }
 
+    if kwin::on_kde() {
+        kwin::unload_leftover_keys().await; // a edit mode script left by a crashed daemon would keep eating letters
+    }
     let mut kwin_cleanup: Option<(String, std::path::PathBuf)> = None;
     // Warm focus cache from KWin; a trigger then needs no KWin round trip.
     if kwin::on_kde() {
@@ -1190,6 +1543,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
             let _ = conn.call_method(Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), "unregister", &(component().as_str(), action)).await;
         }
     }
+    end_edit(&sh).await; // hand the keys back before exiting
+    end_insert(&sh).await;
     if let Some((plugin, file)) = kwin_cleanup {
         let _ = conn.call_method(Some("org.kde.KWin"), "/Scripting", Some("org.kde.kwin.Scripting"), "unloadScript", &(plugin.as_str(),)).await;
         let _ = std::fs::remove_file(file);
@@ -1202,6 +1557,15 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
 mod tests {
     use super::*;
     use crate::keygrab::{KC_H, KC_I, KC_J, KC_K, KC_L};
+
+    // Copy / paste key combinations turn into keysyms (modifiers first); malformed ones are refused.
+    #[test]
+    fn key_combos() {
+        assert_eq!(parse_combo("ctrl+c"), Some(vec![0xffe3, 'c' as i32]));
+        assert_eq!(parse_combo("Ctrl+Shift+V"), Some(vec![0xffe3, XK_SHIFT_L, 'v' as i32]));
+        assert_eq!(parse_combo("ctrl+"), None);
+        assert_eq!(parse_combo("super+c"), None);
+    }
 
     // Physical keys map to arrow directions for both the hjkl and ijkl layouts.
     #[test]

@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "vimvibe-core"
-version = "0.2.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "ashpd",

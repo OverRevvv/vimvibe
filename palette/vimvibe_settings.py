@@ -287,6 +287,8 @@ class SettingsWindow(QWidget):
         pf.addRow("", self.hide_panel)
         self.start_hidden = QCheckBox("Open with the panel hidden (the “hide / show panel” key brings it back — see Keys)")
         pf.addRow("", self.start_hidden)
+        self.remember_panel = QCheckBox("Remember a hidden panel: it stays hidden next time until Space (or the key above) brings it back")
+        pf.addRow("", self.remember_panel)
         self.dim = QSlider(Qt.Horizontal); self.dim.setRange(0, 60)
         pf.addRow("Darken the screen behind:", self.dim)
         v.addWidget(panel)
@@ -306,6 +308,8 @@ class SettingsWindow(QWidget):
         f.addRow("Labels:", self.auto)
         self.continuous = QCheckBox("Continuous mode: come back after each click, ready for the next one")
         f.addRow("Continuous mode:", self.continuous)
+        self.double_esc = QCheckBox("Press Esc twice to close vimvibe (one Esc only steps back from the mouse modes)")
+        f.addRow("Closing:", self.double_esc)
         self.cdelay = QSpinBox(); self.cdelay.setRange(100, 5000); self.cdelay.setSingleStep(100); self.cdelay.setSuffix(" ms")
         f.addRow("Wait before re-reading:", self.cdelay)
         f.addRow("", QLabel("<small>Continuous mode stops when you press Esc, after typing into a text field, or when "
@@ -363,6 +367,19 @@ class SettingsWindow(QWidget):
         self.mouse_open_in.addItem("The search (the grid is one key away)", "search")
         self.mouse_open_in.addItem("The mouse grid", "grid")
         bf.addRow("vimvibe opens in:", self.mouse_open_in)
+        self.mouse_fallback = QCheckBox("Open in the mouse grid when an app has nothing to label (Spotify, games, ...)")
+        bf.addRow("", self.mouse_fallback)
+        self.mouse_ocr = QCheckBox("Label the text on screen with OCR first (needs tesseract)")
+        bf.addRow("", self.mouse_ocr)
+        self.mouse_stay = QCheckBox("Stay in the mouse mode after a click (leave with Esc Esc or the vimvibe shortcut)")
+        bf.addRow("", self.mouse_stay)
+        self.mouse_remember = QCheckBox("Instead, open in the mode I used last (search, grid or pointer movement)")
+        bf.addRow("", self.mouse_remember)
+        self.clip_on = QCheckBox("Clipboard: copy / paste keys and the history picker (Ctrl+Shift+H)")
+        bf.addRow("", self.clip_on)
+        self.edit_step = QSpinBox(); self.edit_step.setRange(1, 20)
+        bf.addRow("Edit mode (Ctrl+E): J / K move", self.edit_step)
+        bf.addRow("", QLabel("lines per press while not selecting (H / L and selecting move one step; type a number first, like 5 J, to repeat)"))
         self.mouse_scope = QComboBox()
         self.mouse_scope.addItem("The window vimvibe was opened over", "window")
         self.mouse_scope.addItem("The whole screen", "screen")
@@ -605,6 +622,7 @@ class SettingsWindow(QWidget):
         self.hint_line.setChecked(bool(ui["hint_line"]))
         self.hide_panel.setChecked(bool(ui["hide_panel_until_typing"]))
         self.start_hidden.setChecked(bool(ui.get("start_hidden", False)))
+        self.remember_panel.setChecked(bool(ui.get("remember_panel", True)))
         self.dim.setValue(int(ui["dim"]))
         self.key_values = {a: keys.effective(cfg.get("keys"), a) for a in keys.DEFAULTS}
         self.show_bindings()
@@ -615,6 +633,7 @@ class SettingsWindow(QWidget):
         self.delay.setCurrentIndex(i)
         self.auto.setChecked(bool(hints.get("auto_activate", False)))
         self.continuous.setChecked(bool(beh.get("continuous", False)))
+        self.double_esc.setChecked(bool(beh.get("double_esc_close", True)))
         self.cdelay.setValue(int(beh.get("continuous_delay_ms", 500)))
         self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
         self.hjkl_action.setCurrentIndex(max(0, self.hjkl_action.findData(scroll.get("hjkl", "scroll"))))
@@ -633,6 +652,12 @@ class SettingsWindow(QWidget):
         self.mouse_on.setChecked(bool(mouse["enabled"]))
         self.mouse_widgets[0].setEnabled(self.mouse_on.isChecked())
         self.mouse_open_in.setCurrentIndex(max(0, self.mouse_open_in.findData(mouse["open_in"])))
+        self.mouse_fallback.setChecked(bool(mouse.get("fallback_grid", True)))
+        self.mouse_ocr.setChecked(bool(mouse.get("ocr", True)))
+        self.mouse_stay.setChecked(bool(mouse.get("stay_after_click", True)))
+        self.mouse_remember.setChecked(bool(mouse.get("remember_mode", False)))
+        self.edit_step.setValue(int({**d["edit"], **cfg.get("edit", {})}["step"]))
+        self.clip_on.setChecked(bool({**d["clipboard"], **cfg.get("clipboard", {})}["enabled"]))
         self.mouse_scope.setCurrentIndex(max(0, self.mouse_scope.findData(mouse["scope"])))
         self.mouse_cols.setValue(int(mouse["cols"])); self.mouse_rows.setValue(int(mouse["rows"]))
         self.mouse_depth.setValue(int(mouse["max_depth"]))
@@ -664,21 +689,25 @@ class SettingsWindow(QWidget):
             panel_width=self.panel_width.value(), rows=self.rows.value(), panel_font_size=self.panel_font_size.value(),
             panel=self.panel.currentData(), hint_line=self.hint_line.isChecked(),
             hide_panel_until_typing=self.hide_panel.isChecked(), start_hidden=self.start_hidden.isChecked(),
+            remember_panel=self.remember_panel.isChecked(),
             dim=self.dim.value())
         # only what differs from the defaults is written, so later releases can improve the defaults
         cfg["keys"] = {a: v for a, v in self.key_values.items() if v != keys.DEFAULTS[a]}
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
-        cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value())
+        cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value(),
+                               double_esc_close=self.double_esc.isChecked())
         cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), distance=round(self.scroll_step.value(), 1),
                              fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
                              edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),
                              natural=self.scroll_natural.isChecked(), invert_horizontal=self.scroll_invert_h.isChecked())
         cfg.setdefault("mouse", {}).update(
-            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), scope=self.mouse_scope.currentData(),
+            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), remember_mode=self.mouse_remember.isChecked(), stay_after_click=self.mouse_stay.isChecked(), fallback_grid=self.mouse_fallback.isChecked(), ocr=self.mouse_ocr.isChecked(), scope=self.mouse_scope.currentData(),
             cols=self.mouse_cols.value(), rows=self.mouse_rows.value(), max_depth=self.mouse_depth.value(),
             alphabet=self.mouse_alphabet.text().strip().lower() or self.defaults["mouse"]["alphabet"],
             keys=self.mouse_keys.currentData(), speed=self.mouse_speed.value(), fast=self.mouse_fast.value(),
             accelerate=self.mouse_accel.isChecked())
+        cfg.setdefault("edit", {}).update(step=self.edit_step.value())
+        cfg.setdefault("clipboard", {}).update(enabled=self.clip_on.isChecked())
         cfg.setdefault("accessibility", {}).update(offer_restart=self.offer_restart.isChecked())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]

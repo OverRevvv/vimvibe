@@ -2,7 +2,7 @@
 
 Thanks for helping. vimvibe is a keyboard-driven "click anything" overlay for Linux (KDE Plasma on Wayland first).
 This file explains how the project fits together, how to run and test your changes, and what a good contribution
-looks like. The [README](README.md) covers using vimvibe; this covers working on it.
+looks like. The [README](README.md) and [docs/](docs/using.md) cover using vimvibe; this covers working on it.
 
 ## Contents
 
@@ -32,7 +32,7 @@ Two processes talk over the session D-Bus:
 - The **daemon** owns everything that needs the system: the accessibility tree, KWin, the pointer and keyboard
   permission, the global shortcuts. It idles with no polling.
 - The **overlay** is a thin client. Anything that speaks the same D-Bus API could replace it
-  (API table: README → *Developer guide → D-Bus API*, and the header of `core/src/daemon.rs`).
+  (API table: docs/development.md → *D-Bus API*, and the header of `core/src/daemon.rs`).
 - Settings live in `~/.config/vimvibe/config.toml`. The daemon reads only what it enforces; the overlay reads the rest.
   Defaults for the overlay are in `palette/vimvibe_style.py`, for the daemon in `core/src/config.rs`. A new setting
   needs both sides to agree on its name.
@@ -94,7 +94,7 @@ Run these before you open a pull request:
 ```bash
 cargo test   --release --manifest-path core/Cargo.toml     # Rust unit tests
 cargo clippy --release --manifest-path core/Cargo.toml     # must stay free of warnings
-(cd palette && python3 -m unittest test_keys test_mouse)   # Python logic tests
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay)   # Python logic tests
 ```
 
 - Unit tests cover the logic that does not need a desktop (matching, labels, key tables, the mouse grid, command-line
@@ -123,7 +123,7 @@ core/src/
 palette/
   vimvibe_palette.py   the overlay            vimvibe_settings.py   the Settings window
   vimvibe_style.py     config, defaults, theme  vimvibe_keys.py      rebindable keys (tests: test_keys.py)
-  vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)
+  vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)   vimvibe_clip.py  clipboard history (Klipper) and set-clipboard   test_overlay.py  overlay key behaviour, headless
 packaging/       launcher script, systemd user unit, icons      install.sh   installer / upgrader / --uninstall
 docs/            screenshots used by the README                 research/    design notes and measurements
 ```
@@ -143,7 +143,7 @@ Keep these when you change anything; reviewers will check them.
 6. **The overlay never takes the keyboard when it must not.** Over popups (the start menu, open menus) keys come
    through `keygrab.rs`. Do not add shortcuts that steal keys from a popup.
 7. **A new setting is a full feature:** a default in both places, a control in Settings, loading and saving that keeps
-   unknown keys, and a README line. Only non-default key bindings are written to `[keys]`.
+   unknown keys, and a line in docs/using.md. Only non-default key bindings are written to `[keys]`.
 8. **Never kill or restart a user's app without asking.** The Chromium restart is only offered, never automatic.
 9. **Do not invent measurements.** If you claim a behaviour ("Chrome ignores X"), measure it, and put the result in
    `research/` or the pull request.
@@ -158,22 +158,22 @@ The code is meant to be read top-down by someone new to the project, so comments
 - **Explain *why*, not *what*.** Comment non-obvious logic: ordering that matters, a workaround for an app's quirk,
   a measured number, a lock or `await` you must not move. Long functions get short step comments (1., 2., ...).
 - **Keep comments true.** If you change behaviour, change the comment in the same commit. A stale comment is worse
-  than none. When you add or change a D-Bus method, update the header in `daemon.rs` and the README table.
+  than none. When you add or change a D-Bus method, update the header in `daemon.rs` and the table in docs/development.md.
 - Do not narrate the obvious (`// increment i`) and do not leave commented-out code.
 
 ## Common changes
 
 **Add a D-Bus method.** Implement it in `daemon.rs` (follow the existing `#[zbus::interface]` methods, validate input, return
-JSON text), document it in the header comment there and in the README's D-Bus table, then call it from the overlay.
+JSON text), document it in the header comment there and in the D-Bus table in docs/development.md, then call it from the overlay.
 
 **Add a keyboard shortcut to the overlay.** Add an action in `palette/vimvibe_keys.py` (name, default, label), handle
-it in `vimvibe_palette.py`, extend `test_keys.py`, and mention it in the palette docstring and README → *Customizing keys*.
+it in `vimvibe_palette.py`, extend `test_keys.py`, and mention it in the palette docstring and docs/using.md → *Customizing keys*.
 
 **Add a setting.** Struct and default in `core/src/config.rs` (if the daemon needs it), default in
-`palette/vimvibe_style.py`, widget + load + collect in `vimvibe_settings.py`, README → *Settings*.
+`palette/vimvibe_style.py`, widget + load + collect in `vimvibe_settings.py`, docs/configuration.md.
 
 **Support another app or toolkit.** First run `vimvibe-core --app NAME list` and `doctor`. If the tree is empty, it is
-usually an accessibility setup problem, not a bug in matching; add it to README → *Making apps visible* once you know
+usually an accessibility setup problem, not a bug in matching; add it to docs/using.md → *Making apps visible* once you know
 the fix. Chromium-based apps are handled generically in `chromium.rs`; do not add per-app name lists.
 
 **Support another desktop.** Most of the daemon is desktop-neutral (AT-SPI, portal). The KDE-only parts are the
@@ -194,7 +194,7 @@ to agree on the shape before writing a lot of code.
   - screenshots or a short recording for anything visible in the overlay or Settings;
   - any new permission, file, or D-Bus surface the change adds.
 - Every new or changed function is commented as described in [Comments](#comments-how-the-code-is-documented).
-- Update the docs in the same pull request: README (user-facing behaviour, commands, D-Bus table, limitations),
+- Update the docs in the same pull request: README and docs/ (user-facing behaviour, commands, D-Bus table, limitations),
   the doc comment at the top of the file you changed, and this file if you changed how to build or test.
 - Do not commit build output (`core/target/`), `__pycache__`, personal config, or tokens.
 - Releases: bump `version` in `core/Cargo.toml`, tag `vX.Y.Z`. See README → *Upgrading and developing side by side*.

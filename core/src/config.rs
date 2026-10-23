@@ -15,6 +15,8 @@ pub struct Config {
     pub accessibility: Accessibility,
     pub scroll: Scroll,
     pub mouse: Mouse,
+    pub behavior: Behavior,
+    pub edit: Edit,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,18 +53,54 @@ impl Default for Scroll {
     }
 }
 
+/// General overlay behaviour the daemon takes part in. `double_esc_close`: over a popup the daemon sees Esc first, and
+/// with this on (the default) it needs two presses in a row to close, like the overlay itself.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Behavior {
+    pub double_esc_close: bool,
+}
+
+impl Default for Behavior {
+    /// Esc twice closes; a single Esc only steps back or warns.
+    fn default() -> Self {
+        Behavior { double_esc_close: true }
+    }
+}
+
+/// Edit mode (see daemon.rs `edit_task`). `step`: how many arrow presses J / K send while not selecting, so one press
+/// scrolls about a wheel notch (1 = exactly one line); H / L and selecting always move one step.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Edit {
+    pub step: u32,
+}
+
+impl Default for Edit {
+    /// Three lines, like one notch of the mouse wheel.
+    fn default() -> Self {
+        Edit { step: 3 }
+    }
+}
+
 /// Keyboard mouse control (the grid and H J K L pointer movement). Only the master switch matters to the daemon; the
 /// grid size, alphabet and speeds are read by the overlay.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Mouse {
     pub enabled: bool,
+    /// An app that exposes nothing to label opens on its window rectangle so the overlay can use the mouse grid.
+    pub fallback_grid: bool,
+    /// Label the text on screen (screenshot + tesseract) in apps that expose nothing, before the grid is used.
+    pub ocr: bool,
+    /// Logical width of the screen in pixels, to convert screenshot pixels on a scaled display; 0 = assume 1:1.
+    pub screen_width: i32,
 }
 
 impl Default for Mouse {
     /// On by default; turning it off makes the daemon refuse every `Pointer*` call.
     fn default() -> Self {
-        Mouse { enabled: true }
+        Mouse { enabled: true, fallback_grid: true, ocr: true, screen_width: 0 }
     }
 }
 

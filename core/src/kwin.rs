@@ -151,6 +151,12 @@ pub struct Session {
 impl Session {
     /// Own a unique bridge name, write the script with that name filled in, load and run it in KWin.
     async fn start(source: &str) -> anyhow::Result<Self> {
+        Self::start_named(source, None).await
+    }
+
+    /// Like `start`, with a fixed KWin plugin name instead of a per-process one: a script that outlives the daemon
+    /// (a crash) can then be unloaded by the next daemon (see `unload_leftover_keys`).
+    async fn start_named(source: &str, fixed_plugin: Option<&str>) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
         let (wtx, wrx) = mpsc::unbounded_channel();
         // unique per session: a long-lived watcher and one-shot queries (cursor, window list) coexist in the daemon
@@ -159,7 +165,7 @@ impl Session {
         let source = source.replace(BRIDGE_NAME, &bridge);
         let conn = zbus::connection::Builder::session()?.name(bridge.as_str())?.serve_at("/", Bridge { tx, wtx })?.build().await?;
         let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let plugin = bridge.replace("org.vimvibe.Bridge.p", "vimvibe-");
+        let plugin = fixed_plugin.map_or_else(|| bridge.replace("org.vimvibe.Bridge.p", "vimvibe-"), str::to_string);
         let script_file = dir.join(format!("{plugin}.js"));
         std::fs::write(&script_file, &source)?;
         let id: i32 = conn
@@ -171,6 +177,11 @@ impl Session {
         let path = format!("/Scripting/Script{id}");
         session.conn.call_method(Some("org.kde.KWin"), path.as_str(), Some("org.kde.kwin.Script"), "run", &()).await?;
         Ok(session)
+    }
+
+    /// The next string a script sent through the `Data` bridge method (None when the session is gone).
+    pub async fn next_data(&mut self) -> Option<String> {
+        self.wrx.recv().await
     }
 
     /// KWin plugin name of the loaded script (for unloading it).
@@ -196,6 +207,38 @@ pub async fn active_window(timeout: Duration) -> Option<FocusInfo> {
     let got = tokio::time::timeout(timeout, s.rx.recv()).await.ok().flatten();
     s.stop().await;
     got
+}
+
+/// KWin plugin name of the key-taking script (fixed, so a leftover one can be found and unloaded).
+const KEYS_PLUGIN: &str = "vimvibe-keymode";
+
+/// Take these keys system-wide (KWin global shortcuts, which win over every app on Wayland) until the returned session
+/// is stopped. `keys` are (id, key sequence) pairs, e.g. ("j", "J"), ("shift-j", "Shift+J"), ("esc", "Esc"); each press
+/// is delivered as its id through `Session::next_data`. The key is consumed: the focused app does not see it.
+pub async fn grab_keys(keys: &[(&str, &str)]) -> anyhow::Result<Session> {
+    let list = serde_json::to_string(keys)?;
+    let source = format!(
+        r#"
+const keys = {list};
+// one closure per key, so each shortcut reports its own id
+function reg(id, seq) {{
+  registerShortcut("vimvibe-key-" + id, "vimvibe key mode: " + id, seq, function () {{
+    callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Data", id);
+  }});
+}}
+for (const k of keys) reg(k[0], k[1]);
+"#
+    );
+    unload_leftover_keys().await;
+    Session::start_named(&source, Some(KEYS_PLUGIN)).await
+}
+
+/// Unload a key-taking script a crashed daemon left in KWin (it would keep eating those keys). Called before every
+/// grab and at daemon start.
+pub async fn unload_leftover_keys() {
+    if let Ok(conn) = Connection::session().await {
+        let _ = conn.call_method(Some("org.kde.KWin"), "/Scripting", Some("org.kde.kwin.Scripting"), "unloadScript", &(KEYS_PLUGIN,)).await;
+    }
 }
 
 /// Persistent listener for the daemon: the returned session's `rx` yields a `FocusInfo` on every focus or geometry change.

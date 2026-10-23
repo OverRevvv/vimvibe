@@ -15,6 +15,11 @@ CONFIG = os.path.join(CONFIG_HOME, f"vimvibe-{PROFILE}" if PROFILE else "vimvibe
 # a profile without settings of its own starts from the installed vimvibe's (read-only; saving writes CONFIG)
 CONFIG_READ = CONFIG if os.path.exists(CONFIG) or not PROFILE else os.path.join(CONFIG_HOME, "vimvibe", "config.toml")
 
+# Small UI state that is not a setting but should survive between opens and between the two overlays (the normal one
+# and the one over popups): whether the search panel was hidden, which mouse mode was last used. Kept next to the logs.
+STATE_HOME = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+STATE = os.path.join(STATE_HOME, f"vimvibe-{PROFILE}" if PROFILE else "vimvibe", "ui-state.json")
+
 DEFAULT_ACCENT = "#3b82f6"
 
 
@@ -49,9 +54,11 @@ DEFAULTS = {
         "hide_panel_until_typing": False,  # labels only until you type (Shortcat's "hide query pane")
         "dim": 0,                   # darken the screen behind the labels, percent 0–60
         "start_hidden": False,      # open with the search panel hidden (the hide/show key brings it back)
+        "remember_panel": True,     # a hidden panel stays hidden on the next opens until the hide/show key brings it back
     },
     "hints": {"delay_ms": 0, "after_input": False, "auto_activate": False},
-    "behavior": {"continuous": False, "continuous_delay_ms": 500},
+    "behavior": {"continuous": False, "continuous_delay_ms": 500,
+                 "double_esc_close": True},  # Esc must be pressed twice to close vimvibe (one Esc only steps back / warns)
     "scroll": {
         "keys": "hjkl",              # layout of the direction keys: hjkl (Vim) or ijkl
         "hjkl": "scroll",            # Space + H/J/K/L: "scroll" or "arrows" (Space + Ctrl + H/J/K/L does the other)
@@ -65,9 +72,20 @@ DEFAULTS = {
         "natural": False,            # touchpad-style direction
         "invert_horizontal": False,  # swap left and right for H / L
     },
+    "edit": {
+        "step": 3,                   # edit mode: arrow presses per J / K while not selecting (3 = about one wheel notch)
+    },
+    "clipboard": {
+        "enabled": True,             # copy / paste keys and the clipboard history picker
+    },
     "mouse": {
         "enabled": True,             # master switch for the keyboard mouse (the grid and H J K L movement)
         "open_in": "search",         # what vimvibe opens in: search | grid
+        "ocr": True,                 # label the text on screen (needs spectacle + tesseract) before the grid is used
+        "screen_width": 0,           # logical screen width, only to convert OCR pixels on a scaled display; 0 = 1:1
+        "fallback_grid": True,       # an app with nothing to label (no accessibility tree) opens in the mouse grid
+        "stay_after_click": True,    # a click made from the mouse modes keeps the mode open (leave with Esc Esc or the shortcut)
+        "remember_mode": False,      # instead: open in the mode (search, grid, pointer movement) that was used last
         "scope": "window",           # what the grid covers at first: window | screen
         "cols": 5, "rows": 5,        # cells per grid level
         "alphabet": "abcdefghijklmnopqrstuvwxyz",  # letters the cell names are made of (row letter + column letter)
@@ -120,6 +138,30 @@ def read_config():
     except (OSError, ValueError) as e:
         print(f"ignoring {CONFIG_READ}: {e}", file=sys.stderr)
     return cfg
+
+
+def read_state():
+    """The remembered UI state (a dict; empty when nothing was saved yet or the file is unreadable)."""
+    try:
+        with open(STATE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(**changes):
+    """Merge `changes` into the remembered UI state. Failures are ignored: losing this state only loses a convenience."""
+    state = read_state()
+    state.update(changes)
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, STATE)
+    except OSError:
+        pass
 
 
 def write_config(cfg):

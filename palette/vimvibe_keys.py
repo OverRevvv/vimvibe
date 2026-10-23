@@ -23,11 +23,11 @@ MOD_KEYS = tuple(iv(k) for k in (Qt.Key_Control, Qt.Key_Alt, Qt.Key_Shift, Qt.Ke
 # (action, what it does, defaults, kind): kind "key" = a key combination; "mods" = modifiers used with the digits 1-9;
 # "tap" = one modifier tapped on its own (empty = off)
 ACTIONS = [
-    ("toggle_panel", "Hide / show the search panel (labels stay)", ["Ctrl+Space"], "key"),
+    ("toggle_panel", "Hide / show the search panel (labels stay). Plain Space only hides it while the search is empty", ["Space", "Ctrl+Space"], "key"),
     ("click", "Click the selected element", ["Return", "Enter"], "key"),
     ("right_click", "Right click", ["Ctrl+Return", "Ctrl+Enter"], "key"),
     ("double_click", "Double click", ["Alt+Return", "Alt+Enter"], "key"),
-    ("middle_click", "Middle click", ["Shift+Return", "Shift+Enter"], "key"),
+    ("middle_click", "Middle click", ["Shift+Return", "Shift+Enter", "Ctrl+Alt+Return", "Ctrl+Alt+Enter"], "key"),
     ("close", "Close", ["Escape"], "key"),
     ("settings", "Open Settings", ["Ctrl+,", "Ctrl+Shift+,"], "key"),
     ("refresh", "Re-read the window", ["Ctrl+R"], "key"),
@@ -36,6 +36,14 @@ ACTIONS = [
     ("mouse_place", "Mouse: leave the pointer here, no click", ["Space"], "key"),
     ("mouse_scope", "Mouse grid: window or whole screen", ["Ctrl+Shift+G"], "key"),
     ("mouse_back", "Mouse grid: zoom out one step", ["Backspace"], "key"),
+    ("copy_text", "Copy the selected element's text to the clipboard", ["Ctrl+Y"], "key"),
+    ("paste_into", "Click the selected element, then paste the clipboard into it", ["Ctrl+Shift+V"], "key"),
+    ("clip_history", "Clipboard history: pick an earlier copy and paste it", ["Ctrl+Shift+H"], "key"),
+    # Edit mode (Ctrl+E, Vimium-like: H J K L arrows, V / Y / P select, copy, paste) is switched off while it is reworked:
+    # the action is commented out, so no key starts it. The code (palette `enter_edit`, daemon `edit_start`) stays.
+    # ("edit_mode", "Edit mode: H J K L arrow keys, U / D Home / End, V select, Y copy, P paste (Esc leaves)", ["Ctrl+E"], "key"),
+    ("jump_input", "Search: show only the text fields; again = the next one (Enter focuses it, Esc returns)", ["Ctrl+I"], "key"),
+    ("mouse_insert", "Mouse movement: click here and type (Esc returns to vimvibe)", ["Ctrl+I"], "key"),
     ("next", "Select the next result", ["Down", "Tab", "Ctrl+N"], "key"),
     ("prev", "Select the previous result", ["Up", "Shift+Tab", "Ctrl+P"], "key"),
     ("page_down", "Select a page further down", ["PgDown"], "key"),
@@ -43,7 +51,7 @@ ACTIONS = [
     ("row_act", "Act on result row 1–9 (modifiers + digit)", ["Ctrl"], "mods"),
     ("row_select", "Select result row 1–9 (modifiers + digit)", ["Ctrl+Shift"], "mods"),
     ("tap_labels", "Tap to clear the search and show every label", ["Alt"], "tap"),
-    ("tap_hover", "Tap to hover the selected element (twice: focus it)", ["Ctrl"], "tap"),
+    ("tap_hover", "Tap to hover the selected element (twice: focus it); off by default", [], "tap"),
 ]
 DEFAULTS = {name: list(default) for name, _, default, _ in ACTIONS}
 KIND = {name: kind for name, _, _, kind in ACTIONS}
@@ -140,7 +148,7 @@ class KeyMap:
 
     def __init__(self, cfg_keys=None):
         """Parse every action's bindings; an unreadable one is skipped (and reported in `problems`)."""
-        self.keys = {}      # (key, mods) -> action
+        self.keys = {}      # (key, mods) -> [actions]: one key can serve a search action and a mouse-mode action
         self.row_act = self.row_select = 0
         self.tap = {}       # action -> modifier key that is tapped
         self.problems = []
@@ -154,7 +162,9 @@ class KeyMap:
                     if parsed is None:
                         self.problems.append(f"{action}: can't read “{v}”")
                     else:
-                        self.keys.setdefault(parsed, action)
+                        self.keys.setdefault(parsed, [])
+                        if action not in self.keys[parsed]:
+                            self.keys[parsed].append(action)
                 elif kind == "mods":
                     bits = parse_mods(v)
                     if bits is None or not bits:
@@ -170,15 +180,19 @@ class KeyMap:
                     else:
                         self.tap[action] = mod
 
-    def match(self, key, mods):
-        """The action bound to this key press, or None. Digits with the row modifiers give ("row_act"|"row_select", n)."""
+    def match(self, key, mods, mouse=False):
+        """The action bound to this key press, or None. Digits with the row modifiers give ("row_act"|"row_select", n).
+        `mouse` says the grid / pointer movement is active: a key shared by a search action and a mouse action (Space:
+        hide the panel / leave the pointer) gives the one that belongs to the current place."""
         key, mods = canon(key, mods)
         if K_1 <= key <= K_9:
             # exact modifier match, so Ctrl+Shift+1 is "select" even though Ctrl+1 is "act"
             for name, bits in (("row_act", self.row_act), ("row_select", self.row_select)):
                 if bits and bits == mods:
                     return (name, key - K_1)
-        return self.keys.get((key, mods))
+        actions = self.keys.get((key, mods), [])
+        own = [a for a in actions if a not in (SEARCH_ONLY if mouse else MOUSE_ONLY)]
+        return (own or actions or [None])[0]
 
     def label(self, action):
         """The first binding of `action` for hint lines ("Ctrl+Space"); empty when unbound."""
@@ -206,7 +220,23 @@ def conflicts(cfg_keys):
                 seen.setdefault(parsed, [])
                 if action not in seen[parsed]:
                     seen[parsed].append(action)
-    return {k: v for k, v in seen.items() if len(v) > 1}
+    return {k: v for k, v in seen.items() if clash(v)}
+
+
+# Actions that only work in one place can share a key with those of the other place: "Space" hides the panel in the
+# search and leaves the pointer in the mouse modes. Everything else (click, close, ...) works in both.
+MOUSE_ONLY = {"mouse_place", "mouse_back", "mouse_scope", "mouse_insert"}
+SEARCH_ONLY = {"toggle_panel", "next", "prev", "page_down", "page_up", "refresh", "settings", "copy_text", "paste_into", "jump_input"}
+
+
+def clash(actions):
+    """Whether some two of `actions` (bound to one key) can be active at the same time."""
+    for i, a in enumerate(actions):
+        for b in actions[i + 1:]:
+            if (a in MOUSE_ONLY and b in SEARCH_ONLY) or (b in MOUSE_ONLY and a in SEARCH_ONLY):
+                continue
+            return True
+    return False
 
 
 def is_plain_text_key(key, mods):

@@ -57,6 +57,9 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(K.conflicts(None), {})
         self.assertEqual(list(K.conflicts({"next": ["Return"]}).values()), [["click", "next"]])
         self.assertTrue(K.is_plain_text_key(*K.parse_key("a")))
+        # Space hides the panel in the search and leaves the pointer in the mouse modes: not a clash
+        self.assertEqual(K.conflicts(None), {})
+        self.assertEqual(K.DEFAULTS["toggle_panel"][0], "Space")
         self.assertFalse(K.is_plain_text_key(*K.parse_key("Ctrl+A")))
         self.assertFalse(K.is_plain_text_key(*K.parse_key("Return")))
 

@@ -93,7 +93,10 @@ pub async fn target_window(conn: &AccessibilityConnection, app_filter: Option<&s
             let title = wp.name().await.unwrap_or_default();
             let win = Window { app: app_name.clone(), title: title.clone(), root: w.clone(), geometry: if pid_match { geometry } else { None } };
             let active = state.contains(State::Active);
-            if active || pid_match {
+            // A window whose title is exactly KWin's caption is a candidate even when its app's PID did not match and it is
+            // not flagged Active: sandboxed apps (Flatpak) report the proxy's PID, and Qt WebEngine apps never set Active.
+            let title_match = filter.is_none() && focus.is_some_and(|f| !f.caption.is_empty() && f.caption == title);
+            if active || pid_match || title_match {
                 // score: the PID KWin reported dominates (+16, +4 if the title matches the caption), then Active (+8),
                 // visible (+2), has content (+4) and a title (+1)
                 let mut score = 1;
@@ -102,6 +105,9 @@ pub async fn target_window(conn: &AccessibilityConnection, app_filter: Option<&s
                     if focus.is_some_and(|f| f.caption == title) {
                         score += 4;
                     }
+                }
+                if title_match && !pid_match {
+                    score += 6;
                 }
                 if active {
                     score += 8;
@@ -131,7 +137,15 @@ pub async fn target_window(conn: &AccessibilityConnection, app_filter: Option<&s
     // window (an on-screen keyboard, a tray app) would show the wrong elements, so only accept a candidate whose title
     // is exactly the focused window's caption (sandboxed apps can report a different PID).
     if let (Some(f), None, false) = (focus, &filter, any_pid_match) {
-        return Ok(best.map(|(_, w)| w).filter(|w| !f.caption.is_empty() && w.title == f.caption));
+        // Such a window (Flatpak/Snap apps: the accessibility bus reports the sandbox proxy's PID, not the app's) was
+        // matched by its title, so it is the window KWin reported and its geometry is the one that places the labels.
+        // Without this the labels are drawn relative to the screen corner instead of the window.
+        return Ok(best
+            .map(|(_, mut w)| {
+                w.geometry = geometry;
+                w
+            })
+            .filter(|w| !f.caption.is_empty() && w.title == f.caption));
     }
     Ok(best.map(|(_, w)| w).or(fallback))
 }
