@@ -1,0 +1,107 @@
+# Configuration
+
+Settings window and `config.toml`.
+
+## Settings
+
+Open the Settings window with **Ctrl+Shift+,** (or `vimvibe settings`). It has a live preview of the labels and edits
+`~/.config/vimvibe/config.toml`, which you can also edit by hand. Changes apply the next time the overlay opens.
+
+| Tab | What you can set |
+|---|---|
+| General | shortcuts (changed in System Settings), launch at login, window switching, app launching, panel labels |
+| Appearance | theme presets (Blue, Shortcat, Nord, Dracula, Gruvbox, Solarized light, High contrast); label background, text, outline and selected colours; font; label text size; overall label size; corner radius; capitals; panel style (dark/light), opacity, width, result rows, text size, position, key-hint line, hide-until-typing; screen dimming |
+| Labels & behaviour | when labels appear (immediately … 5 s, after input), Vimium-style auto-click, continuous mode, and the scrolling group: what Space+HJKL does, direction keys, distance, Shift multiplier, smooth animation and its length, natural direction, swap left/right |
+| Keys | every key the overlay uses, with Change / Add / Reset per action, and conflict warnings |
+| Excluded apps | apps vimvibe must never read or click |
+| Accessibility & setup | setup check, turn accessibility on, keep it on after login, allow pointer and keyboard control |
+
+```toml
+[ui]
+theme = "Blue"             # preset the colours came from (informational)
+accent = "#3b82f6"         # label background ("#facc15" + label_text "#000000" = Shortcat's look)
+label_text = "auto"        # label text colour; auto = black or white, whichever reads
+label_border = "auto"      # label outline colour
+selected = "auto"          # highlight of the selected element/label (Shortcat uses light green, "#86efac")
+font = ""                  # font family; empty = desktop font
+label_font_size = 0        # points; 0 = automatic
+label_scale = 1.0          # overall label size, 0.6–2.0
+label_radius = 3           # corner radius, px
+uppercase = true           # SA vs sa (typing is case-insensitive)
+panel = "auto"             # auto | top | center | bottom
+panel_theme = "dark"       # dark | light
+panel_opacity = 0.96
+panel_width = 640
+rows = 9                   # result rows shown (Ctrl+1..9 reach the first nine)
+panel_font_size = 0        # points; 0 = automatic
+hint_line = true
+hide_panel_until_typing = false   # labels only until you type (Shortcat's "hide query pane")
+start_hidden = false       # open with the panel hidden; the toggle_panel key (Space / Ctrl+Space) shows it
+remember_panel = true      # a panel you hid stays hidden on the next opens (the state is kept in ~/.local/state/vimvibe/ui-state.json)
+dim = 0                    # darken the screen behind the labels, percent 0–60
+
+[hints]
+delay_ms = 0               # when labels appear after opening (Shortcat's default is 2000)
+after_input = false        # true: labels appear only once you start typing
+auto_activate = false      # true: a fully typed label clicks at once (Vimium-style), no Enter
+
+[behavior]
+continuous = false         # come back after each click
+continuous_delay_ms = 500
+double_esc_close = true    # Esc must be pressed twice to close vimvibe (one Esc only steps back or warns)
+
+[keys]                     # only what you changed is written; see Using vimvibe → Customizing keys
+toggle_panel = ["Ctrl+Space"]
+
+[scroll]
+keys = "hjkl"              # direction keys: "hjkl" (Vim) or "ijkl"
+hjkl = "scroll"            # Space + H J K L: "scroll" or "arrows" (Space + Ctrl + key does the other one)
+distance = 1.0             # mouse-wheel notches per press (about 3 lines)
+fast = 4                   # Shift multiplies the distance by this
+smooth = true              # glide like a smooth-scrolling mouse wheel instead of jumping
+smooth_ms = 220            # how long a glide takes to settle
+edge_keys = true           # Space + g g = top, Space + Shift+G = bottom
+edge_notches = 600.0       # how far a jump to top/bottom travels (the app stops at the end)
+edge_ms = 600              # how long that jump takes
+natural = false            # touchpad-style direction
+invert_horizontal = false  # swap left and right for H / L
+
+[edit]
+step = 3                  # edit mode: arrow presses per J / K while not selecting
+
+[clipboard]
+enabled = true             # copy / paste keys and the history picker (Ctrl+Shift+H)
+
+[mouse]
+enabled = true             # master switch for the keyboard mouse (grid and H J K L movement); false turns it all off
+open_in = "search"         # what vimvibe opens in: "search" or "grid"
+fallback_grid = true       # an app with nothing to label opens in the mouse grid
+ocr = true                 # ...after labelling its on-screen text with OCR (spectacle + tesseract)
+screen_width = 0           # logical screen width, only for scaled displays (0 = 1:1)
+stay_after_click = true    # a click from the grid / H J K L movement keeps the mode open (leave: Esc Esc or Meta+Shift+Space)
+remember_mode = false      # instead, open in the mode used last (search, grid or H J K L movement); off by default
+scope = "window"           # what the grid covers at first: "window" or "screen"
+cols = 5                   # cells per grid level
+rows = 5
+alphabet = "abcdefghijklmnopqrstuvwxyz"   # cell names are a row letter + a column letter from this
+max_depth = 4              # how many times a cell can be divided again
+keys = "hjkl"              # pointer movement keys: "hjkl" or "ijkl"
+speed = 500                # px per second
+fast = 3                   # Shift multiplies the speed by this (Alt slows it to a quarter)
+accelerate = true          # speed up while a key is held
+
+[search]
+windows = true             # offer your other open windows as results (window switching)
+apps = true                # offer installed applications as results
+panel = true               # label Plasma's panels (only while they are visible)
+
+[apps]
+exclude = ["keepassxc", "org.kde.konsole"]
+
+[accessibility]
+enable_on_start = true     # the daemon turns desktop accessibility on when it starts
+offer_restart = true       # offer to restart a Chromium-based app (Chrome, Brave, Electron) that shows nothing, with accessibility on
+```
+
+One-off colour for a single run: `python3 ~/.local/share/vimvibe/vimvibe_palette.py --accent orange`
+(or set `VIMVIBE_ACCENT`).
