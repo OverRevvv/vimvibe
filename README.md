@@ -130,3 +130,7 @@ The same pages are published as a website (`index.html`, no build step; GitHub P
 existing Linux tools do ([10](research/10-prior-art-analysis.md)), measurements on this machine
 ([09](research/09-core-prototype.md)), and the plan to reach the rest of the desktop
 ([11](research/11-os-scope-plan.md)). vimvibe is independent and not affiliated with Shortcat.
+
+## License
+
+[MIT](LICENSE).

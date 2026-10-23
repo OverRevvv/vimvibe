@@ -7,8 +7,7 @@ Name:           vimvibe
 Version:        %{?vv_version}%{!?vv_version:2.1.0}
 Release:        1%{?dist}
 Summary:        Keyboard-driven "click anything by typing its name" overlay for KDE Plasma (Wayland)
-# TODO: the project has no LICENSE file yet; set this when one is added
-License:        Unspecified
+License:        MIT
 URL:            https://github.com/OverRevvv/vimvibe
 Source0:        vimvibe-%{version}-linux-x86_64.tar.gz
 ExclusiveArch:  x86_64
@@ -46,6 +45,7 @@ install -Dm644 vimvibe.desktop %{buildroot}%{_datadir}/applications/vimvibe.desk
 
 %files
 %doc README.md
+%license LICENSE
 %{_bindir}/vimvibe
 %{_bindir}/vimvibe-core
 %{_datadir}/vimvibe/

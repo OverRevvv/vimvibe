@@ -14,7 +14,7 @@ strip "$OUT/vimvibe-core" 2>/dev/null || true
 install -m755 install.sh "$OUT/install.sh"
 cp palette/vimvibe_*.py "$OUT/palette/"          # the tests stay behind: only the modules the overlay imports
 cp -r packaging/vimvibe packaging/icons "$OUT/packaging/"
-cp README.md "$OUT/README.md"
+cp README.md LICENSE "$OUT/"
 tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 ( cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
 echo "built dist/$NAME.tar.gz"
