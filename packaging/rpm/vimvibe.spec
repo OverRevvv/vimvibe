@@ -4,7 +4,7 @@
 %global __strip /bin/true
 
 Name:           vimvibe
-Version:        %{?vv_version}%{!?vv_version:2.1.0}
+Version:        %{?vv_version}%{!?vv_version:2.1.1}
 Release:        1%{?dist}
 Summary:        Keyboard-driven "click anything by typing its name" overlay for KDE Plasma (Wayland)
 License:        MIT
@@ -53,5 +53,8 @@ install -Dm644 vimvibe.desktop %{buildroot}%{_datadir}/applications/vimvibe.desk
 %{_datadir}/applications/vimvibe.desktop
 
 %changelog
+* Sat Oct 24 2026 OverRevvv <rdude1612@gmail.com> - 2.1.1-1
+- Real pointer clicks, Enter twice double-clicks, MIT license
+
 * Fri Oct 23 2026 OverRevvv <rdude1612@gmail.com> - 2.1.0-1
 - Initial package
