@@ -10,17 +10,16 @@ import json, os, shutil, subprocess
 
 from PySide6.QtCore import QEvent, QProcess, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QGridLayout, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFontComboBox,
+from PySide6.QtWidgets import (QGridLayout, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
                                QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
 import vimvibe_keys as keys
-from vimvibe_style import CONFIG, PRESETS, PROFILE, Theme, icon_path
+from vimvibe_style import AUTOSTART, CONFIG, PRESETS, PROFILE, Theme, export_settings, icon_path, import_settings
 
 DELAYS = [("Immediately", 0), ("After 200 ms", 200), ("After 500 ms", 500), ("After 1 second", 1000),
           ("After 2 seconds (Shortcat's default)", 2000), ("After 5 seconds", 5000), ("After input", -1)]
-AUTOSTART = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "autostart", "vimvibe.desktop")
 
 
 def core_binary():
@@ -175,8 +174,8 @@ class SettingsWindow(QWidget):
         tabs = QTabWidget()
         tabs.addTab(self.general_tab(), "General")
         tabs.addTab(self.appearance_tab(), "Appearance")
-        tabs.addTab(self.labels_tab(), "Labels && behaviour")
-        tabs.addTab(self.mouse_tab(), "Mouse")
+        tabs.addTab(self.scrolled(self.labels_tab()), "Labels && behaviour")
+        tabs.addTab(self.scrolled(self.mouse_tab()), "Mouse")
         tabs.addTab(self.keys_tab(), "Keys")
         tabs.addTab(self.apps_tab(), "Excluded apps")
         tabs.addTab(self.system_tab(), "Accessibility && setup")
@@ -184,10 +183,23 @@ class SettingsWindow(QWidget):
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.close)
         buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(lambda: self.load(self.defaults))
+        transfer = QHBoxLayout()
+        exp = QPushButton("Export settings…"); exp.clicked.connect(self.export_dialog)
+        exp.setToolTip("Save every setting (colours, keys, mouse, scrolling, excluded apps, ...) to a JSON file")
+        imp = QPushButton("Import settings…"); imp.clicked.connect(self.import_dialog)
+        imp.setToolTip("Replace the current settings with ones from an exported JSON file")
+        transfer.addWidget(exp); transfer.addWidget(imp); transfer.addStretch()
         lay = QVBoxLayout(self)
         lay.addWidget(tabs)
+        lay.addLayout(transfer)
         lay.addWidget(buttons)
         self.load(self.read_config())
+
+    def scrolled(self, page):
+        """Wrap a long tab page in a scroll area, so the window keeps its size on small screens."""
+        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.NoFrame)
+        area.setWidget(page)
+        return area
 
     def changed(self):
         """Any appearance control changed: refresh the preview."""
@@ -313,6 +325,8 @@ class SettingsWindow(QWidget):
         self.double_tap = QSpinBox(); self.double_tap.setRange(0, 600); self.double_tap.setSingleStep(50); self.double_tap.setSuffix(" ms")
         self.double_tap.setSpecialValueText("off (Enter clicks at once)")
         f.addRow("Tap Enter twice within:", self.double_tap)
+        self.insert_after = QCheckBox("After a text field is clicked, let me type in it and come back with Esc")
+        f.addRow("Text fields:", self.insert_after)
         self.click_with = QComboBox()
         self.click_with.addItem("A real click, like a mouse (needs the pointer permission)", "pointer")
         self.click_with.addItem("The app's own action first (no pointer move)", "semantic")
@@ -378,6 +392,18 @@ class SettingsWindow(QWidget):
         bf.addRow("", self.mouse_fallback)
         self.mouse_ocr = QCheckBox("Label the text on screen with OCR first (needs tesseract)")
         bf.addRow("", self.mouse_ocr)
+        self.ocr_lang = QLineEdit(); self.ocr_lang.setPlaceholderText("eng")
+        self.ocr_lang.setToolTip("Tesseract language codes joined with +, e.g. eng+deu (each needs its language data installed)")
+        bf.addRow("OCR language:", self.ocr_lang)
+        self.ocr_conf = QSpinBox(); self.ocr_conf.setRange(0, 100); self.ocr_conf.setSuffix(" % minimum confidence")
+        bf.addRow("OCR accuracy:", self.ocr_conf)
+        self.ocr_timeout = QSpinBox(); self.ocr_timeout.setRange(500, 30000); self.ocr_timeout.setSingleStep(500); self.ocr_timeout.setSuffix(" ms")
+        bf.addRow("Give up OCR after:", self.ocr_timeout)
+        self.screen_width = QSpinBox(); self.screen_width.setRange(0, 16384); self.screen_width.setSuffix(" px")
+        self.screen_width.setSpecialValueText("unscaled (1:1)")
+        self.screen_width.setToolTip("Only for scaled displays: the screen's logical width, so OCR labels line up")
+        bf.addRow("Logical screen width:", self.screen_width)
+        self.mouse_ocr.toggled.connect(lambda on: [x.setEnabled(on) for x in (self.ocr_lang, self.ocr_conf, self.ocr_timeout, self.screen_width)])
         self.mouse_stay = QCheckBox("Stay in the mouse mode after a click (leave with Esc Esc or the vimvibe shortcut)")
         bf.addRow("", self.mouse_stay)
         self.mouse_remember = QCheckBox("Instead, open in the mode I used last (search, grid or pointer movement)")
@@ -543,6 +569,8 @@ class SettingsWindow(QWidget):
         b5.setToolTip("Adds --force-renderer-accessibility to their launchers (copies in ~/.local/share/applications); restart them afterwards")
         b5.clicked.connect(lambda: self.show_cmd([core_binary(), "doctor", "--fix-chrome"]))
         bl.addWidget(b5)
+        self.enable_on_start = QCheckBox("Turn desktop accessibility on whenever vimvibe starts")
+        bl.addWidget(self.enable_on_start)
         self.offer_restart = QCheckBox("When Chrome, Brave, Edge or an Electron app shows nothing, offer to restart it with accessibility on")
         bl.addWidget(self.offer_restart)
         v.addWidget(box)
@@ -644,6 +672,7 @@ class SettingsWindow(QWidget):
         self.cdelay.setValue(int(beh.get("continuous_delay_ms", 500)))
         self.double_tap.setValue(int(beh.get("double_tap_ms", 250)))
         self.click_with.setCurrentIndex(max(0, self.click_with.findData(beh.get("click_with", "pointer"))))
+        self.insert_after.setChecked(bool(beh.get("insert_after_field", True)))
         self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
         self.hjkl_action.setCurrentIndex(max(0, self.hjkl_action.findData(scroll.get("hjkl", "scroll"))))
         self.scroll_step.setValue(float(scroll.get("distance", 1.0)))
@@ -663,6 +692,11 @@ class SettingsWindow(QWidget):
         self.mouse_open_in.setCurrentIndex(max(0, self.mouse_open_in.findData(mouse["open_in"])))
         self.mouse_fallback.setChecked(bool(mouse.get("fallback_grid", True)))
         self.mouse_ocr.setChecked(bool(mouse.get("ocr", True)))
+        ocr = {**d["ocr"], **cfg.get("ocr", {})}
+        self.ocr_lang.setText(str(ocr["lang"])); self.ocr_conf.setValue(int(ocr["min_confidence"]))
+        self.ocr_timeout.setValue(int(ocr["timeout_ms"])); self.screen_width.setValue(int(mouse.get("screen_width", 0)))
+        for x in (self.ocr_lang, self.ocr_conf, self.ocr_timeout, self.screen_width):
+            x.setEnabled(self.mouse_ocr.isChecked())
         self.mouse_stay.setChecked(bool(mouse.get("stay_after_click", True)))
         self.mouse_remember.setChecked(bool(mouse.get("remember_mode", False)))
         self.edit_step.setValue(int({**d["edit"], **cfg.get("edit", {})}["step"]))
@@ -674,7 +708,8 @@ class SettingsWindow(QWidget):
         self.mouse_keys.setCurrentIndex(max(0, self.mouse_keys.findData(mouse["keys"])))
         self.mouse_speed.setValue(int(mouse["speed"])); self.mouse_fast.setValue(int(mouse["fast"]))
         self.mouse_accel.setChecked(bool(mouse["accelerate"]))
-        self.offer_restart.setChecked(bool({**d["accessibility"], **cfg.get("accessibility", {})}["offer_restart"]))
+        acc = {**d["accessibility"], **cfg.get("accessibility", {})}
+        self.offer_restart.setChecked(bool(acc["offer_restart"])); self.enable_on_start.setChecked(bool(acc["enable_on_start"]))
         self.windows.setChecked(bool(search["windows"]))
         self.apps_search.setChecked(bool(search["apps"]))
         self.panel_labels.setChecked(bool(search["panel"]))
@@ -705,20 +740,22 @@ class SettingsWindow(QWidget):
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
         cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value(),
                                double_esc_close=self.double_esc.isChecked(), double_tap_ms=self.double_tap.value(),
-                               click_with=self.click_with.currentData())
+                               click_with=self.click_with.currentData(), insert_after_field=self.insert_after.isChecked())
         cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), distance=round(self.scroll_step.value(), 1),
                              fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
                              edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),
                              natural=self.scroll_natural.isChecked(), invert_horizontal=self.scroll_invert_h.isChecked())
         cfg.setdefault("mouse", {}).update(
-            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), remember_mode=self.mouse_remember.isChecked(), stay_after_click=self.mouse_stay.isChecked(), fallback_grid=self.mouse_fallback.isChecked(), ocr=self.mouse_ocr.isChecked(), scope=self.mouse_scope.currentData(),
+            enabled=self.mouse_on.isChecked(), open_in=self.mouse_open_in.currentData(), remember_mode=self.mouse_remember.isChecked(), stay_after_click=self.mouse_stay.isChecked(), fallback_grid=self.mouse_fallback.isChecked(), ocr=self.mouse_ocr.isChecked(), screen_width=self.screen_width.value(), scope=self.mouse_scope.currentData(),
             cols=self.mouse_cols.value(), rows=self.mouse_rows.value(), max_depth=self.mouse_depth.value(),
             alphabet=self.mouse_alphabet.text().strip().lower() or self.defaults["mouse"]["alphabet"],
             keys=self.mouse_keys.currentData(), speed=self.mouse_speed.value(), fast=self.mouse_fast.value(),
             accelerate=self.mouse_accel.isChecked())
         cfg.setdefault("edit", {}).update(step=self.edit_step.value())
         cfg.setdefault("clipboard", {}).update(enabled=self.clip_on.isChecked())
-        cfg.setdefault("accessibility", {}).update(offer_restart=self.offer_restart.isChecked())
+        cfg.setdefault("accessibility", {}).update(offer_restart=self.offer_restart.isChecked(), enable_on_start=self.enable_on_start.isChecked())
+        cfg.setdefault("ocr", {}).update(lang=self.ocr_lang.text().strip() or "eng", min_confidence=float(self.ocr_conf.value()),
+                                         timeout_ms=self.ocr_timeout.value())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())
         cfg["apps"]["exclude"] = [self.apps.item(i).text() for i in range(self.apps.count())]
         return cfg
@@ -733,6 +770,39 @@ class SettingsWindow(QWidget):
         if not PROFILE:
             self.set_autostart(self.login.isChecked())
         self.close()
+
+    def export_dialog(self):
+        """Ask where to save, then export every setting as JSON. Unsaved changes in this window are saved first, so
+        the file holds what the window shows."""
+        path, _ = QFileDialog.getSaveFileName(self, "Export vimvibe settings", os.path.expanduser("~/vimvibe-settings.json"), "JSON (*.json)")
+        if not path:
+            return
+        self.write_config(self.collect())
+        try:
+            version = subprocess.run([core_binary(), "--version"], capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            version = ""
+        try:
+            export_settings(path, version)
+        except OSError as e:
+            QMessageBox.warning(self, "vimvibe", f"Could not write {path}: {e}"); return
+        QMessageBox.information(self, "vimvibe", f"Settings exported to {path}")
+
+    def import_dialog(self):
+        """Pick an exported JSON file, confirm, replace the settings with it and show them in this window."""
+        path, _ = QFileDialog.getOpenFileName(self, "Import vimvibe settings", os.path.expanduser("~"), "JSON (*.json)")
+        if not path:
+            return
+        if QMessageBox.question(self, "vimvibe", "Replace all current settings with the ones in this file?") != QMessageBox.Yes:
+            return
+        try:
+            data = import_settings(path)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "vimvibe", f"Could not import {path}: {e}"); return
+        if not PROFILE and isinstance(data.get("launch_at_login"), bool):
+            self.set_autostart(data["launch_at_login"])
+        self.load(self.read_config())
+        QMessageBox.information(self, "vimvibe", "Settings imported. They apply the next time vimvibe opens.")
 
     def set_autostart(self, on):
         """Create or remove the XDG autostart entry that runs `vimvibe start` at login."""

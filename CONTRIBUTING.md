@@ -10,6 +10,8 @@ looks like. The [README](README.md) and [docs/](docs/using.md) cover using vimvi
 - [Set up](#set-up)
 - [Run your changes without touching your installed copy](#run-your-changes-without-touching-your-installed-copy)
 - [Tests and checks](#tests-and-checks)
+- [Testing by hand](#testing-by-hand)
+- [The development and release workflow (DevOps)](#the-development-and-release-workflow-devops)
 - [Where things live](#where-things-live)
 - [Rules the design depends on](#rules-the-design-depends-on)
 - [Comments: how the code is documented](#comments-how-the-code-is-documented)
@@ -37,6 +39,10 @@ Two processes talk over the session D-Bus:
   Defaults for the overlay are in `palette/vimvibe_style.py`, for the daemon in `core/src/config.rs`. A new setting
   needs both sides to agree on its name.
 
+**How every feature works inside** (opening, labels, search, clicking, keys, scrolling, the keyboard mouse, insert
+mode, OCR, clipboard, settings) is explained in [docs/architecture.md](docs/architecture.md). Read the section for the
+area you change.
+
 `research/` holds the measurements behind the design (start with 09, 10 and 11). Read the relevant note before
 changing something it covers: several things that look odd (for example how Chromium is enabled, or why keys are
 taken through the accessibility registry) are the result of measured dead ends.
@@ -51,6 +57,9 @@ You need a Linux machine to test on. KDE Plasma 6 on Wayland is the supported ta
 | Python 3 with PySide6 | the overlay and Settings (`python3-pyside6.qtwidgets`, or `pip install --user PySide6`) |
 | `glib2` tools (`gdbus`) | talking to the daemon from a shell |
 | `layer-shell-qt` | normally installed with Plasma |
+| `spectacle` and `tesseract` (+ `tesseract-langpack-eng`) | the OCR layer (`sudo dnf install tesseract`) |
+| `podman` or `docker` | building the RPM in a clean Fedora container |
+| `gh` (GitHub CLI) | watching CI runs and releases |
 
 ```bash
 git clone https://github.com/OverRevvv/vimvibe.git && cd vimvibe
@@ -92,10 +101,24 @@ gdbus call --session --dest org.vimvibe.DaemonDev --object-path /org/vimvibe/Dae
 Run these before you open a pull request:
 
 ```bash
-cargo test   --release --manifest-path core/Cargo.toml     # Rust unit tests
+cargo test   --release --manifest-path core/Cargo.toml     # Rust unit tests (labels, matching, OCR parsing, key combos, ...)
 cargo clippy --release --manifest-path core/Cargo.toml     # must stay free of warnings
-(cd palette && python3 -m unittest test_keys test_mouse test_overlay)   # Python logic tests
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay)   # overlay logic, headless
+(cd palette && python3 -m unittest test_settings)          # settings export/import + Settings window (own process: it
+                                                           # points XDG_CONFIG_HOME at a temporary directory)
 ```
+
+What each suite covers:
+
+| Suite | What it pins down |
+|---|---|
+| `core/src/*.rs` `#[cfg(test)]` | label assignment and speed (`hints.rs`), fuzzy matching and role words (`matcher.rs`), which accessibility action counts as a click (`model.rs`), OCR TSV parsing / phrase merging / clipping / scaling (`ocr.rs`), key-combo parsing (`daemon.rs`), command-line splitting (`chromium.rs`) |
+| `test_keys.py` | key-combination parsing, defaults, conflicts, `[keys]` overrides |
+| `test_mouse.py` | grid naming, zooming, depth limits, alphabet clean-up |
+| `test_overlay.py` | the real `Overlay` widget, offscreen, with a fake daemon that records every D-Bus call: Esc Esc, Space panel toggle and scroll chords, mouse modes staying open, Enter twice = double click, Ctrl+I from every mode, clipboard picker, popups |
+| `test_settings.py` | export → import round trip, refusal of foreign or mistyped files, every option survives the Settings window |
+
+Run one test: `(cd palette && python3 -m unittest test_overlay.OverlayKeys.test_enter_double_tap_double_clicks)`.
 
 - Unit tests cover the logic that does not need a desktop (matching, labels, key tables, the mouse grid, command-line
   splitting). **Put new logic in a testable function and add a test.** Keep GUI code thin so this stays possible.
@@ -104,6 +127,139 @@ cargo clippy --release --manifest-path core/Cargo.toml     # must stay free of w
   desktop, session type and the app(s) you tried it on.
 - The code is not auto-formatted as a whole (`cargo fmt` would rewrite files you did not touch). Match the style
   of the code around yours, and do not reformat unrelated lines; it makes reviews unreadable.
+
+## Testing by hand
+
+Anything involving AT-SPI, KWin, the portal or the overlay on screen needs a real Plasma session. These are the
+methods used during development; use them, and say in the pull request which ones you ran.
+
+**Safety first.** Test on windows you own, never on your real work:
+
+- Use `tools/click-target.py` (a window with a plain button, a menu button, a combo box and a double-click button that
+  logs every event) instead of clicking in your editor, browser or terminal.
+- Never use `pkill -f` / `pgrep -f`. They match your own shell's command line and kill it. Kill test windows by their
+  PID (the click target logs it).
+
+```bash
+./dev.sh start                                   # the dev profile: Meta+Alt+Space opens it
+python3 tools/click-target.py /tmp/ct.log &      # a throwaway window to click
+B="busctl --user call org.vimvibe.DaemonDev /org/vimvibe/Daemon org.vimvibe.Daemon"   # (org.vimvibe.Daemon for the installed copy)
+$B Trigger                                       # open over the focused window (the click target)
+$B Elements                                      # every element: id, label, role, screen rectangle
+$B ActivateWith is 2 click                       # act on element 2: click | right | double | middle | hover | focus
+$B Search s save                                 # ranked results for a query
+$B Status                                        # timings of the last open, pointer and keyboard permission
+$B Close
+cat /tmp/ct.log                                  # what the window really saw ("menu show", "DOUBLE", ...)
+```
+
+More tools:
+
+```bash
+core/target/release/vimvibe-core --app dolphin list      # what vimvibe reads in an app (no daemon needed)
+core/target/release/vimvibe-core surfaces                # windows, panels and popups as KWin sees them
+core/target/release/vimvibe-core cursor                  # the real pointer position
+core/target/release/vimvibe-core click 400 300           # a portal click at screen coordinates
+core/target/release/vimvibe-core key -- +Control_L m -Control_L   # press keys in the focused window (+ down, - up)
+core/target/release/vimvibe-core watch 15                # KWin focus/geometry events for 15 s
+spectacle -b -f -n -o /tmp/shot.png                      # a screenshot, to check what is drawn
+tesseract /tmp/shot.png stdout --psm 11 tsv | head       # what OCR reads from it
+python3 palette/vimvibe_palette.py --trigger --query sa --quit-after 5 --snapshot /tmp/overlay.png   # overlay only
+VIMVIBE_DEBUG=1 python3 palette/vimvibe_palette.py       # overlay with debug output
+./dev.sh logs                                            # daemon + overlay logs
+```
+
+**Docs website:** browsers block `fetch` from `file://`, so serve the repository and open it:
+
+```bash
+python3 -m http.server 8765            # then http://localhost:8765/index.html
+google-chrome --headless=new --window-size=1300,1000 --virtual-time-budget=6000 \
+  --screenshot=/tmp/site.png "http://localhost:8765/index.html#/using"      # check a page without a browser window
+```
+
+## The development and release workflow (DevOps)
+
+Everything below is the exact sequence the project uses, from a change to a published release.
+
+### 1. Develop on `beta`
+
+```bash
+git switch beta && git pull
+./dev.sh start                      # build + run the dev profile next to your installed vimvibe
+# ... edit ...
+./dev.sh restart                    # rebuilds what changed (cargo) and restarts daemon + overlay
+```
+
+### 2. Check
+
+```bash
+cargo test   --release --manifest-path core/Cargo.toml
+cargo clippy --release --manifest-path core/Cargo.toml
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay)
+(cd palette && python3 -m unittest test_settings)
+```
+
+Then test by hand as above, and update the docs: `docs/using.md` (behaviour), `docs/configuration.md` (settings),
+`docs/architecture.md` (how it works), `docs/development.md` (D-Bus API).
+
+### 3. Install for daily use (optional)
+
+```bash
+./install.sh                        # build + install to ~/.local (stops and restarts a running vimvibe)
+./install.sh --uninstall            # remove it again (settings are kept)
+```
+
+### 4. Commit and push
+
+```bash
+git add -A && git commit            # imperative summary, then why
+git push origin beta
+```
+
+### 5. Release
+
+```bash
+# 1) bump the version in two places
+sed -i 's/^version = ".*"/version = "X.Y.Z"/' core/Cargo.toml
+#    packaging/rpm/vimvibe.spec: Version default and a new %changelog entry at the top
+cargo build --release --manifest-path core/Cargo.toml     # refreshes Cargo.lock
+git commit -am "Release X.Y.Z" && git push origin beta
+
+# 2) tag: this triggers .github/workflows/release.yml, which builds the tarball and publishes a GitHub release
+git tag vX.Y.Z && git push origin vX.Y.Z
+gh run list --limit 1               # find the run
+gh run watch <run-id> --exit-status
+gh release view vX.Y.Z              # the tarball and its .sha256 are attached
+```
+
+Do not move a published tag. A fix after a release is a new patch version.
+
+### 6. Packages
+
+```bash
+packaging/make-tarball.sh           # dist/vimvibe-X.Y.Z-linux-x86_64.tar.gz (+ .sha256): compiled core, overlay,
+                                    # installer, icons, README, LICENSE; users need no Rust
+packaging/make-rpm.sh               # dist/vimvibe-X.Y.Z-1.fcNN.x86_64.rpm, built in a fedora:latest container
+                                    # from the tarball (run make-tarball.sh first); no rpmbuild needed on the host
+```
+
+Verify them the way the releases were verified:
+
+```bash
+# the tarball installs without Rust, into a scratch home
+mkdir -p /tmp/t && tar xzf dist/vimvibe-*.tar.gz -C /tmp/t && cd /tmp/t/vimvibe-*/ && \
+  HOME=/tmp/t/home PATH=/usr/bin:/bin ./install.sh && /tmp/t/home/.local/bin/vimvibe version
+
+# the RPM installs with its dependencies in a clean Fedora
+podman run --rm -v "$PWD/dist:/d:Z" fedora:latest bash -c \
+  "dnf -y install /d/vimvibe-*.rpm && vimvibe version && rpm -qpL /d/vimvibe-*.rpm"
+```
+
+### 7. Merge to `main`, docs site
+
+Open a pull request `beta` → `main` (summary, what changed, how it was tested). The documentation site
+(`index.html`) is served by GitHub Pages from `main`, root folder. It renders the Markdown files directly, so it
+updates with the merge.
 
 ## Where things live
 
@@ -119,13 +275,19 @@ core/src/
   keygrab.rs     keys through the accessibility registry (popup mode, arrow mode)
   scroller.rs    smooth scrolling                            pointer.rs RemoteDesktop portal: clicks, motion, keys
   chromium.rs    Chromium/Electron: detect, fix launchers, restart with --force-renderer-accessibility
+  ocr.rs         OCR labels for apps without accessibility (spectacle + tesseract)
   config.rs      config.toml and profiles                    doctor.rs  setup check and the --fix options
 palette/
   vimvibe_palette.py   the overlay            vimvibe_settings.py   the Settings window
   vimvibe_style.py     config, defaults, theme  vimvibe_keys.py      rebindable keys (tests: test_keys.py)
   vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)   vimvibe_clip.py  clipboard history (Klipper) and set-clipboard   test_overlay.py  overlay key behaviour, headless
+  test_settings.py     settings export/import and the Settings window
 packaging/       launcher script, systemd user unit, icons      install.sh   installer / upgrader / --uninstall
-docs/            screenshots used by the README                 research/    design notes and measurements
+packaging/make-tarball.sh, make-rpm.sh, rpm/vimvibe.spec         release tarball and RPM
+.github/workflows/release.yml    on a v* tag: build the tarball, publish the GitHub release
+docs/            the user and developer documentation (also the website's pages)   index.html   the docs website
+tools/click-target.py            a throwaway window for testing clicks by hand
+research/        design notes, measurements and plans (12: copy text from the screen)
 ```
 
 ## Rules the design depends on
@@ -134,16 +296,18 @@ Keep these when you change anything; reviewers will check them.
 
 1. **Local and private.** No network code, no telemetry. Element names are read only from the window the user
    triggered, only on trigger, and kept in memory. Window titles are never written to logs or `doctor` output.
-2. **Semantic first.** Activate through the app (AT-SPI action, selection, focus) before falling back to a pointer
-   click. Keep the activation order in `model.rs`.
+2. **Clicks behave like the mouse.** Enter makes a real pointer click when the pointer permission is there; the
+   semantic ladder in `model.rs` (action → selection → focus) is the fallback and the `click_with = "semantic"` mode.
+   Never count a focus-only action as a click. See docs/architecture.md → *Clicking* for the measurements.
 3. **No root, no `uinput`.** Pointer and keyboard injection go through the XDG RemoteDesktop portal with the user's
    one-time consent. The daemon never opens the consent dialog on its own (only `pointer-setup` does).
 4. **Idle means idle.** No polling or timers while the overlay is closed. Wake-ups come from D-Bus messages.
 5. **Excluded apps are never read.** `[apps] exclude` is enforced in the daemon, not the overlay.
 6. **The overlay never takes the keyboard when it must not.** Over popups (the start menu, open menus) keys come
    through `keygrab.rs`. Do not add shortcuts that steal keys from a popup.
-7. **A new setting is a full feature:** a default in both places, a control in Settings, loading and saving that keeps
-   unknown keys, and a line in docs/using.md. Only non-default key bindings are written to `[keys]`.
+7. **A new setting is a full feature:** a default in both places, a control in Settings (load and collect), a line in
+   docs/configuration.md, and it must survive export → import (`test_settings.py` checks every default appears).
+   Only non-default key bindings are written to `[keys]`.
 8. **Never kill or restart a user's app without asking.** The Chromium restart is only offered, never automatic.
 9. **Do not invent measurements.** If you claim a behaviour ("Chrome ignores X"), measure it, and put the result in
    `research/` or the pull request.
@@ -197,7 +361,7 @@ to agree on the shape before writing a lot of code.
 - Update the docs in the same pull request: README and docs/ (user-facing behaviour, commands, D-Bus table, limitations),
   the doc comment at the top of the file you changed, and this file if you changed how to build or test.
 - Do not commit build output (`core/target/`), `__pycache__`, personal config, or tokens.
-- Releases: bump `version` in `core/Cargo.toml`, tag `vX.Y.Z`. See README → *Upgrading and developing side by side*.
+- Releases: see [The development and release workflow](#the-development-and-release-workflow-devops).
 
 ## Reporting bugs
 
@@ -212,6 +376,6 @@ Open an issue with:
 
 ## Licence
 
-The repository does not yet carry a licence file. Until one is added, ask the maintainer before assuming how
-contributions may be reused, and do not copy code into vimvibe from projects whose licence is incompatible or
-unknown (the prior-art notes in `research/10` record which projects are GPL-3 and which have no licence).
+vimvibe is [MIT-licensed](LICENSE); contributions are accepted under the same licence. Do not copy code into vimvibe
+from projects whose licence is incompatible or unknown (the prior-art notes in `research/10` record which projects are
+GPL-3 and which have no licence).

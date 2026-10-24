@@ -6,6 +6,7 @@
 #   vimvibe restart    stop, then start
 #   vimvibe status     what is running, plus the daemon's own status
 #   vimvibe settings   open the Settings window
+#   vimvibe export F   save every setting to the JSON file F;  vimvibe import F   load them from F
 #   vimvibe doctor     setup check (add --fix to turn accessibility on, --fix-env to keep it on after login)
 #   vimvibe logs       show the last lines of both logs
 #   vimvibe open       open the overlay now (same as pressing the shortcut)
@@ -86,6 +87,8 @@ case "${1:-start}" in
     [ -n "$(daemon_pid)" ] && "${CALL[@]}" org.vimvibe.Daemon.Status | sed "s/^('//; s/',)\$//" | python3 -m json.tool 2>/dev/null | grep -v '"caption"'
     ;;
   settings) exec python3 "$PALETTE_DIR/vimvibe_palette.py" --settings ;;
+  export) [ -n "${2:-}" ] || { echo "usage: vimvibe export FILE.json" >&2; exit 2; }; exec python3 "$PALETTE_DIR/vimvibe_palette.py" --export "$2" ;;
+  import) [ -n "${2:-}" ] || { echo "usage: vimvibe import FILE.json" >&2; exit 2; }; exec python3 "$PALETTE_DIR/vimvibe_palette.py" --import "$2" ;;
   doctor) shift; exec "$CORE" doctor "$@" ;;
   logs) tail -n 30 "$STATE/daemon.log" "$STATE/overlay.log" 2>/dev/null ;;
   open) "${CALL[@]}" org.vimvibe.Daemon.Trigger >/dev/null ;;

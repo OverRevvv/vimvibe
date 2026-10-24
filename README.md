@@ -109,7 +109,8 @@ The full list of keys, modes and settings is in the [documentation](docs/using.m
 | | |
 |---|---|
 | [Using vimvibe](docs/using.md) | every key, scrolling, the keyboard mouse, text fields, accessibility, troubleshooting, commands |
-| [Configuration](docs/configuration.md) | the Settings window and every `config.toml` option |
+| [Configuration](docs/configuration.md) | the Settings window, every `config.toml` option, export / import as JSON |
+| [How it works](docs/architecture.md) | the logic behind every feature: opening, labels, clicking, keys, scrolling, mouse, OCR |
 | [Development](docs/development.md) | build, dev profile, code layout, D-Bus API |
 | [Shortcat parity](docs/shortcat-parity.md) · [Limitations](docs/limitations.md) | what matches Shortcat, what does not yet |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | conventions and checks |

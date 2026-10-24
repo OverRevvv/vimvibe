@@ -142,7 +142,8 @@ belongs to them.)
 screen is read with OCR (`spectacle` + `tesseract`; `[mouse] ocr`, on when both are installed) and every phrase becomes
 a label you can type and click, ~2 s; if nothing is found, or OCR is missing, the mouse grid opens instead, which works
 in every app (`[mouse] fallback_grid`). Icon-only buttons have no text, so reach those with the grid. On a scaled
-display set `[mouse] screen_width` to the logical screen width so OCR coordinates line up.
+display set `[mouse] screen_width` to the logical screen width so OCR coordinates line up. Language, accuracy and the
+time limit are in `[ocr]` (Settings → Mouse); how it works: [How it works → OCR](architecture.md#apps-without-accessibility-ocr-and-the-grid).
 
 **Edit mode (switched off for now — no key starts it; the `edit_mode` binding is commented out in `vimvibe_keys.py`).** Like Vimium, for every app: vimvibe hands the keyboard back
 to the app and takes a few plain keys system-wide (through KWin) until you leave, turning them into real keys:
@@ -257,7 +258,7 @@ Accessibility is a session setting that is off by default on most distributions;
 ## Command reference
 
 ```text
-vimvibe start | stop (= quit) | restart | status | settings | logs | open | help
+vimvibe start | stop (= quit) | restart | status | settings | export FILE | import FILE | logs | open | help
 vimvibe doctor [--fix] [--fix-env] [--fix-chrome]
 
 vimvibe-core <command> [--app NAME] [--json] [--strategy auto|cache|walk] ...

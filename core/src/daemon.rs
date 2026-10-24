@@ -715,7 +715,7 @@ async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'
     match res {
         Ok(mut v) => {
             // focusing a text field means the user is going to type: Esc will bring vimvibe back
-            if matches!(act, Act::Click | Act::Focus) && is_input_role(&el.role) && sh.snap.lock().await.is_none() {
+            if cfg.behavior.insert_after_field && matches!(act, Act::Click | Act::Focus) && is_input_role(&el.role) && sh.snap.lock().await.is_none() {
                 if let Err(e) = begin_insert(sh.clone(), em.to_owned()).await {
                     eprintln!("insert mode: {e}");
                 }
@@ -1265,7 +1265,7 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
         if els.is_empty() && !popup_mode && cfg.mouse.enabled && cfg.mouse.ocr && via == "fallback" && crate::ocr::available() {
             if let Some(g) = geometry.filter(|g| g.2 > 0) {
                 let sw = Some(cfg.mouse.screen_width).filter(|w| *w > 0);
-                match crate::ocr::read_window(g, sw, &win_app, &win_title, Duration::from_secs(8)).await {
+                match crate::ocr::read_window(g, sw, &win_app, &win_title, &cfg.ocr).await {
                     Ok(found) if !found.is_empty() => {
                         els = found;
                         via = "ocr";

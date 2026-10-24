@@ -17,6 +17,26 @@ pub struct Config {
     pub mouse: Mouse,
     pub behavior: Behavior,
     pub edit: Edit,
+    pub ocr: Ocr,
+}
+
+/// The OCR layer for apps that expose nothing to accessibility (see ocr.rs); switched on and off by `[mouse] ocr`.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Ocr {
+    /// Tesseract language(s), e.g. "eng" or "eng+deu" (each needs its traineddata installed).
+    pub lang: String,
+    /// Smallest confidence (0-100) a word needs to become a label; lower finds more text and more noise.
+    pub min_confidence: f32,
+    /// Give up after this long (screenshot + recognition) and open the grid instead.
+    pub timeout_ms: u64,
+}
+
+impl Default for Ocr {
+    /// English, the confidence that filtered icons and noise in testing, and a generous time limit.
+    fn default() -> Self {
+        Ocr { lang: "eng".into(), min_confidence: crate::ocr::MIN_CONF, timeout_ms: 8000 }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,12 +82,14 @@ pub struct Behavior {
     /// How Enter clicks an element: `"pointer"` (a real click at the element, like a hardware mouse; the accessibility
     /// action is only the fallback) or `"semantic"` (the app's own action first, a pointer click only as a fallback).
     pub click_with: String,
+    /// After a text field is clicked or focused, hand the keyboard to the app and take Esc to come back (insert mode).
+    pub insert_after_field: bool,
 }
 
 impl Default for Behavior {
     /// Esc twice closes; a single Esc only steps back or warns.
     fn default() -> Self {
-        Behavior { double_esc_close: true, click_with: "pointer".into() }
+        Behavior { double_esc_close: true, click_with: "pointer".into(), insert_after_field: true }
     }
 }
 

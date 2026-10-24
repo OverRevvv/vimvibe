@@ -1648,16 +1648,40 @@ def desktop_entry_installed():
     return any(os.path.isfile(os.path.join(d, "applications", "vimvibe.desktop")) for d in dirs if d)
 
 
+def transfer_settings(export_path, import_path):
+    """`--export FILE` / `--import FILE`: copy the settings to or from JSON (the launcher's `vimvibe export|import`).
+    Returns the process exit code."""
+    from vimvibe_style import export_settings, import_settings
+    try:
+        if export_path:
+            import shutil, subprocess
+            core = os.environ.get("VIMVIBE_CORE") or shutil.which("vimvibe-core") or ""
+            version = subprocess.run([core, "--version"], capture_output=True, text=True).stdout.strip() if core else ""
+            export_settings(export_path, version)
+            print(f"settings exported to {export_path}")
+        else:
+            import_settings(import_path)
+            print(f"settings imported from {import_path} (launch at login is only changed from the Settings window)")
+        return 0
+    except (OSError, ValueError) as e:
+        print(f"vimvibe: {e}", file=sys.stderr)
+        return 1
+
+
 def main():
     """Entry point: the Settings window with --settings, otherwise the resident overlay connected to the daemon."""
     ap = argparse.ArgumentParser(description="vimvibe overlay (keep running) or, with --settings, its Settings window")
     ap.add_argument("--settings", action="store_true", help="open the Settings window")
+    ap.add_argument("--export", metavar="FILE", help="write every setting to a JSON file and exit")
+    ap.add_argument("--import", dest="import_file", metavar="FILE", help="replace the settings with an exported JSON file and exit")
     ap.add_argument("--accent", help=f"label/highlight colour for this run (default {DEFAULT_ACCENT})")
     ap.add_argument("--trigger", action="store_true", help="ask the daemon to open the overlay once (testing)")
     ap.add_argument("--query", default="", help="with --trigger: type this into the search field (testing)")
     ap.add_argument("--quit-after", type=int, default=0, help="exit after N seconds (testing)")
     ap.add_argument("--snapshot", help="after opening, save an image of this overlay window only (testing)")
     a = ap.parse_args()
+    if a.export or a.import_file:  # settings transfer needs no window
+        sys.exit(transfer_settings(a.export, a.import_file))
     app = QApplication(sys.argv)
     app.setApplicationName("vimvibe")
     if icon_path():
