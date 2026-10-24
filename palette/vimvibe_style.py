@@ -98,6 +98,11 @@ DEFAULTS = {
         "fast": 3,                   # Shift multiplies the speed by this (Alt slows it down to a quarter)
         "accelerate": True,          # speed up while a key is held
     },
+    "text": {                        # text mode (Ctrl+T): the words on screen as a Vim buffer
+        "dim": 15,                   # darken the screen behind the buffer, percent 0–60
+        "join_lines": "newline",     # copied lines are joined with: "newline" or "space"
+        "labels": "asdfghjklqwertyuiopzxcvbnm",  # letters of the f-jump labels (home row first)
+    },
     "ocr": {                         # the OCR layer for apps that expose nothing (switched on/off by [mouse] ocr)
         "lang": "eng",               # tesseract language(s), e.g. "eng+deu" (each needs its traineddata installed)
         "min_confidence": 55.0,      # 0-100: lower finds more text, and more noise

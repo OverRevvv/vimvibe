@@ -211,6 +211,57 @@ class OverlayKeys(unittest.TestCase):
         self.o.call = real
         self.o.hide()   # nothing of this overlay may paint during the next test
 
+    def test_clipboard_history_vim_keys(self):
+        """In the clipboard history Ctrl+J / Ctrl+K move down / up (plain j / k still filter)."""
+        P.vimvibe_clip.history = lambda: ["one", "two", "three"]
+        self.key(Qt.Key_H, Qt.ControlModifier | Qt.ShiftModifier, "H")
+        self.key(Qt.Key_J, Qt.ControlModifier, "\n"); self.key(Qt.Key_J, Qt.ControlModifier, "\n")
+        self.assertEqual(self.o.clip["sel"], 2)
+        self.key(Qt.Key_K, Qt.ControlModifier, "\x0b")
+        self.assertEqual(self.o.clip["sel"], 1)
+        self.o.clip = None
+
+    def test_text_mode_copy_and_paste(self):
+        """Ctrl+T captures the screen (nothing is drawn meanwhile), the words become a buffer, Vim keys select and y
+        copies; p goes to the text-field list and Enter there pastes; P pastes where the keyboard is."""
+        copied = []
+        P.vimvibe_clip.set_text = copied.append
+        self.key(Qt.Key_T, Qt.ControlModifier, "\x14")
+        self.assertEqual(self.o.current_mode(), "text"); self.assertEqual(self.o.text["state"], "capturing")
+        QTest.qWait(250)
+        self.assertTrue(self.daemon.named("TextCapture")); self.assertEqual(self.o.text["state"], "reading")
+        words = [{"text": "Hello", "x": 10, "y": 10, "w": 40, "h": 12, "line": "1.1.1"},
+                 {"text": "world", "x": 60, "y": 10, "w": 40, "h": 12, "line": "1.1.1"},
+                 {"text": "again", "x": 10, "y": 30, "w": 40, "h": 12, "line": "1.1.2"}]
+        self.o.text_words(P.json.dumps({"ok": True, "words": words}))
+        self.assertEqual(len(self.o.text["buf"]), 3)
+        for ch in "vjy":
+            self.tap(getattr(Qt, "Key_" + ch.upper()), text=ch)
+        self.assertEqual(copied, ["Hello world\nagain"])
+        el = {"name": "Field", "role": "Entry", "enabled": True}
+        self.o.call = (lambda real: lambda m, *a: {"hits": [{"id": 4, "hint": "FI", "element": el}]} if m == "Search" else real(m, *a))(self.o.call)
+        self.tap(Qt.Key_P, text="p")
+        self.assertIsNone(self.o.text); self.assertTrue(self.o.paste_target); self.assertEqual(self.o.edit.text(), "field")
+        self.daemon.calls.clear()
+        self.tap(Qt.Key_Return); QTest.qWait(600)
+        self.assertEqual(self.daemon.named("ActivateWith")[0][1], (4, "click"))
+        self.assertEqual(self.daemon.named("SendKeys")[0][1], ("ctrl+v",))
+        self.o.hide()
+
+    def test_mode_cycle(self):
+        """Ctrl+Tab goes labels -> grid -> pointer movement -> text -> labels; Ctrl+Shift+Tab goes back."""
+        seen = []
+        for _ in range(4):
+            seen.append(self.o.current_mode())
+            self.o.mode_key("next_mode")
+        self.assertEqual(seen, ["search", "grid", "move", "text"])
+        self.assertEqual(self.o.current_mode(), "search")
+        self.o.mode_key("prev_mode")
+        self.assertEqual(self.o.current_mode(), "text")
+        self.o.mode_key("text_mode")                       # Ctrl+T toggles text mode off again
+        self.assertEqual(self.o.current_mode(), "search")
+        QTest.qWait(250)                                   # let the pending capture timer find text mode gone
+
     def test_input_jump_insert_and_fallback(self):
         """Ctrl+I in the search shows only the text fields, again selects the next; in the movement mode it clicks and
         starts insert mode; an app with nothing to label opens in the grid."""

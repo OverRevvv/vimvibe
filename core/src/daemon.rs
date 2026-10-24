@@ -16,6 +16,8 @@
 //!   PointerScroll(dx, dy, x, y, here)   keyboard mouse: scroll under the pointer (after moving it to (x, y) unless `here`) without leaving the mouse mode
 //!   PointerHold(down)   keyboard mouse: hold / release the left button (drag a text selection with H J K L)
 //!   SendKeys(combo)   close the overlay, then press "ctrl+c" / "ctrl+v" ... in the window below (copy and paste)
+//!   TextCapture() -> json   text mode: screenshot the whole screen now (the overlay draws nothing meanwhile), then
+//!                         read its words in the background and emit `TextWords(json)` with them (see ocr.rs)
 //!   InsertStart()   insert mode: the user is typing into a field; Esc (taken system-wide) brings vimvibe back (see `insert_task`)
 //!   EditStart() / EditEnd()   edit mode: H J K L become arrow keys in the app, U / D Home / End, V selects, Y copies, P pastes
 //!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
@@ -25,7 +27,7 @@
 //!   Quit()                shut down (same as the Meta+Shift+Q shortcut); emits `Quitting` first
 //!   Status() -> json      accessibility/KWin/shortcut state and the last timings
 //! Signals: Opened(json), Closed(), Refused(json), Quitting(), Key(json) (typed over a popup, see keygrab.rs),
-//! OpenSettings() (Ctrl+Shift+, pressed).
+//! OpenSettings() (Ctrl+Shift+, pressed), TextWords(json) (text mode: {"ok", "words": [{text, x, y, w, h, line}], "ms"}).
 //!
 //! Nothing runs while idle: no polling, the only wake-ups are D-Bus messages (hotkey, KWin focus reports, UI calls).
 
@@ -469,6 +471,39 @@ impl Daemon {
             Err(e) => json!({"ok": false, "error": e.to_string()}).to_string(),
         }
     }
+
+    /// Text mode, step 1: take a screenshot of the whole screen and return as soon as it is taken (the overlay hides its
+    /// drawing first, so the screenshot shows only the apps). Step 2 runs in the background: tesseract reads the words
+    /// and `TextWords(json)` delivers them. Refused when OCR is off or spectacle / tesseract are missing.
+    async fn text_capture(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        let cfg = config::load();
+        if !cfg.mouse.ocr {
+            return json!({"ok": false, "error": "text mode needs OCR, which is off (Settings → Mouse → OCR)"}).to_string();
+        }
+        if !crate::ocr::available() {
+            return json!({"ok": false, "error": "text mode needs spectacle and tesseract (sudo dnf install tesseract)"}).to_string();
+        }
+        let png = crate::ocr::shot_path("text");
+        let t0 = Instant::now();
+        if let Err(e) = crate::ocr::screenshot(&png).await {
+            let _ = std::fs::remove_file(&png);
+            return json!({"ok": false, "error": format!("screenshot failed: {e}")}).to_string();
+        }
+        let em = em.to_owned();
+        tokio::spawn(async move {
+            let sw = Some(cfg.mouse.screen_width).filter(|w| *w > 0);
+            let payload = match crate::ocr::read_words(&png, sw, &cfg.ocr).await {
+                Ok(words) => json!({"ok": true, "words": words, "ms": ms(t0.elapsed())}),
+                Err(e) => json!({"ok": false, "error": e.to_string()}),
+            };
+            let _ = Daemon::text_words(&em, &payload.to_string()).await;
+        });
+        json!({"ok": true}).to_string()
+    }
+
+    /// Text mode: the words read from the screenshot `TextCapture` took (or the error).
+    #[zbus(signal)]
+    async fn text_words(emitter: &SignalEmitter<'_>, payload: &str) -> zbus::Result<()>;
 
     /// End edit mode without closing the overlay.
     async fn edit_end(&self) {

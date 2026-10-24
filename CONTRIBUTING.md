@@ -115,9 +115,9 @@ What each suite covers:
 | `core/src/*.rs` `#[cfg(test)]` | label assignment and speed (`hints.rs`), fuzzy matching and role words (`matcher.rs`), which accessibility action counts as a click (`model.rs`), OCR TSV parsing / phrase merging / clipping / scaling (`ocr.rs`), key-combo parsing (`daemon.rs`), command-line splitting (`chromium.rs`) |
 | `test_keys.py` | key-combination parsing, defaults, conflicts, `[keys]` overrides |
 | `test_mouse.py` | grid naming, zooming, depth limits, alphabet clean-up |
-| `test_overlay.py` | the real `Overlay` widget, offscreen, with a fake daemon that records every D-Bus call: Esc Esc, Space panel toggle and scroll chords, mouse modes staying open, Enter twice = double click, Ctrl+I from every mode, clipboard picker, popups |
+| `test_overlay.py` | the real `Overlay` widget, offscreen, with a fake daemon that records every D-Bus call: Esc Esc, Space panel toggle and scroll chords, mouse modes staying open, Enter twice = double click, Ctrl+I from every mode, clipboard picker (Ctrl+J / K), text mode capture → copy → paste into a field, Ctrl+Tab mode cycle, popups |
 | `test_settings.py` | export → import round trip, refusal of foreign or mistyped files, every option survives the Settings window |
-| `test_select.py` | copy mode's selection model: reading order and lines, w / b / j / k / 0 / $ / gg / G with counts, line mode, selected text, highlight rectangles |
+| `test_select.py` | text mode: reading order and lines, column-aware j / k, motions with counts, v / V, yank operators, p / P, f label jump, / search, Esc steps |
 
 Run one test: `(cd palette && python3 -m unittest test_overlay.OverlayKeys.test_enter_double_tap_double_clicks)`.
 
@@ -283,7 +283,7 @@ palette/
   vimvibe_style.py     config, defaults, theme  vimvibe_keys.py      rebindable keys (tests: test_keys.py)
   vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)   vimvibe_clip.py  clipboard history (Klipper) and set-clipboard   test_overlay.py  overlay key behaviour, headless
   test_settings.py     settings export/import and the Settings window
-  vimvibe_select.py    copy mode's selection model over words on screen (tests: test_select.py)
+  vimvibe_select.py    text mode: the screen's words as a Vim buffer (tests: test_select.py)
 packaging/       launcher script, systemd user unit, icons      install.sh   installer / upgrader / --uninstall
 packaging/make-tarball.sh, make-rpm.sh, rpm/vimvibe.spec         release tarball and RPM
 .github/workflows/release.yml    on a v* tag: build the tarball, publish the GitHub release

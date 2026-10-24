@@ -15,6 +15,7 @@ Open the Settings window with **Ctrl+Shift+,** (or `vimvibe settings`). It has a
 | Keys | every key the overlay uses, with Change / Add / Reset per action, and conflict warnings |
 | Excluded apps | apps vimvibe must never read or click |
 | Labels & behaviour (more) | tap Enter twice within (double click; 0 = off), Enter clicks with (pointer / app action), text fields: type and come back with Esc |
+| Mouse → Text mode | darken the screen, keep line breaks or join with spaces, jump label letters; "vimvibe opens in: Text mode" |
 | Mouse (more) | OCR on/off, OCR language, minimum confidence, time limit, logical screen width for scaled displays, grid fallback, stay after click, clipboard keys |
 | Accessibility & setup | setup check, turn accessibility on, turn it on whenever vimvibe starts, offer Chromium restarts, keep it on after login, allow pointer and keyboard control |
 
@@ -79,7 +80,7 @@ enabled = true             # copy / paste keys and the history picker (Ctrl+Shif
 
 [mouse]
 enabled = true             # master switch for the keyboard mouse (grid and H J K L movement); false turns it all off
-open_in = "search"         # what vimvibe opens in: "search" or "grid"
+open_in = "search"         # what vimvibe opens in: "search", "grid" or "text"
 fallback_grid = true       # an app with nothing to label opens in the mouse grid
 ocr = true                 # ...after labelling its on-screen text with OCR (spectacle + tesseract)
 screen_width = 0           # logical screen width, only for scaled displays (0 = 1:1)
@@ -94,6 +95,11 @@ keys = "hjkl"              # pointer movement keys: "hjkl" or "ijkl"
 speed = 500                # px per second
 fast = 3                   # Shift multiplies the speed by this (Alt slows it to a quarter)
 accelerate = true          # speed up while a key is held
+
+[text]                     # text mode (Ctrl+T): the words on screen as a Vim buffer
+dim = 15                   # darken the screen behind it, percent 0–60
+join_lines = "newline"     # copied lines are joined with "newline" or "space"
+labels = "asdfghjklqwertyuiopzxcvbnm"   # letters of the f-jump labels
 
 [ocr]                      # the OCR labels for apps that expose nothing (on/off: [mouse] ocr)
 lang = "eng"               # tesseract language(s), e.g. "eng+deu" (install each language's data)

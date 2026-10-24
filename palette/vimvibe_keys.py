@@ -42,6 +42,9 @@ ACTIONS = [
     # Edit mode (Ctrl+E, Vimium-like: H J K L arrows, V / Y / P select, copy, paste) is switched off while it is reworked:
     # the action is commented out, so no key starts it. The code (palette `enter_edit`, daemon `edit_start`) stays.
     # ("edit_mode", "Edit mode: H J K L arrow keys, U / D Home / End, V select, Y copy, P paste (Esc leaves)", ["Ctrl+E"], "key"),
+    ("text_mode", "Text mode: the words on screen as a Vim buffer to copy from and paste with (on / off)", ["Ctrl+T"], "key"),
+    ("next_mode", "Switch to the next mode: labels → grid → pointer movement → text", ["Ctrl+Tab"], "key"),
+    ("prev_mode", "Switch to the previous mode", ["Ctrl+Shift+Tab"], "key"),
     ("jump_input", "Text fields, in every mode: show only them; again = the next one (Enter focuses it, Esc returns)", ["Ctrl+I"], "key"),
     ("next", "Select the next result", ["Down", "Tab", "Ctrl+N"], "key"),
     ("prev", "Select the previous result", ["Up", "Shift+Tab", "Ctrl+P"], "key"),

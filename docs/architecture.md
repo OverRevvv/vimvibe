@@ -176,12 +176,42 @@ When `target_window` finds nothing but KWin knows the window (Spotify, games, ap
 
 Icon-only buttons have no text for OCR; use the grid for them.
 
+## Text mode
+
+The screen as a read-only Vim buffer (`vimvibe_select.py` for the logic, `text_*` methods in `vimvibe_palette.py`).
+
+1. **Capture without vimvibe in it.** `enter_text` stops drawing anything (the search field moves off screen but
+   keeps the keyboard) and, ~150 ms later, once that empty frame is on screen, calls `TextCapture()`. The daemon runs
+   `spectacle -b -f -n` and returns as soon as the screenshot exists.
+2. **Read in the background.** A daemon task runs tesseract on it (`ocr::read_words`: words, not merged phrases,
+   with their block/paragraph/line numbers), deletes the screenshot, and emits `TextWords(json)`. The overlay shows
+   "Reading the text on screen…" meanwhile; Esc gives up.
+3. **Build the buffer.** `Layout` puts the words in reading order and groups them into lines (by tesseract's line
+   numbers, otherwise by vertical overlap). `Selection` holds an anchor and a cursor. `Buffer` turns keys into
+   motions, selections and requests (`("copy", text)`, `("paste_field",)`, `("paste_here",)`, `("leave",)`).
+4. **Columns.** `j` / `k` score every line above / below by vertical distance plus twice the horizontal distance from
+   the remembered column to the line's nearest word, so the caret stays in its column on screens with side-by-side
+   text (measured on a real screen: a terminal line beside a window must not win over the window's next line).
+5. **Copy** goes to Klipper (`vimvibe_clip.set_text`). **p** leaves text mode for the text-field list (the `field`
+   query) and marks the next Enter as "paste here": the field is clicked, then `SendKeys("ctrl+v")`. **P** sends
+   Ctrl+V to whatever has the keyboard.
+
+Nothing is edited: the buffer is a picture of the screen, so it is never out of sync with an app. Accessible apps
+could give exact text instead of OCR (planned: research/12, milestone 3).
+
+## Modes
+
+`current_mode()` is one of `search` (labels), `grid`, `move`, `text`; `mode_key` handles Ctrl+T (text on / off) and
+Ctrl+Tab / Ctrl+Shift+Tab (next / previous, skipping modes that are off), `switch_mode` leaves the current mode and
+enters the next.
+
 ## Clipboard
 
 `vimvibe_clip.py` talks to **Klipper** over D-Bus: history for the picker (Ctrl+Shift+H) and setting the clipboard.
 Ctrl+Y copies the selected result's name; Ctrl+Shift+V clicks the element and sends Ctrl+V (`SendKeys`, after the
 overlay has hidden, because the overlay holds the keyboard). vimvibe never stores or logs clipboard contents.
-A fuller copy feature (selecting text on screen) is planned: [research/12](../research/12-copy-paste-plan.md).
+Selecting and copying any text on screen is [text mode](#text-mode); the plan and its milestones are in
+[research/12](../research/12-copy-paste-plan.md). In the history picker Ctrl+J / Ctrl+K move.
 
 ## Settings
 

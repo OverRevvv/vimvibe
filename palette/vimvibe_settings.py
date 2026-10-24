@@ -387,6 +387,7 @@ class SettingsWindow(QWidget):
         self.mouse_open_in = QComboBox()
         self.mouse_open_in.addItem("The search (the grid is one key away)", "search")
         self.mouse_open_in.addItem("The mouse grid", "grid")
+        self.mouse_open_in.addItem("Text mode (the screen as a Vim buffer)", "text")
         bf.addRow("vimvibe opens in:", self.mouse_open_in)
         self.mouse_fallback = QCheckBox("Open in the mouse grid when an app has nothing to label (Spotify, games, ...)")
         bf.addRow("", self.mouse_fallback)
@@ -443,6 +444,21 @@ class SettingsWindow(QWidget):
                              "(Accessibility &amp; setup tab); not available over Plasma popups.</small>", textFormat=Qt.RichText, wordWrap=True))
         f.addRow(box)
         self.mouse_on.toggled.connect(box.setEnabled)
+        tbox = QGroupBox("Text mode (Ctrl+T): the words on screen as a Vim buffer, to copy from and paste with"); tf = QFormLayout(tbox)
+        self.text_dim = QSpinBox(); self.text_dim.setRange(0, 60); self.text_dim.setSuffix(" %")
+        tf.addRow("Darken the screen behind it:", self.text_dim)
+        self.text_join = QComboBox()
+        self.text_join.addItem("Keep line breaks", "newline")
+        self.text_join.addItem("Join lines with a space", "space")
+        tf.addRow("Copied lines:", self.text_join)
+        self.text_labels = QLineEdit(); self.text_labels.setPlaceholderText("asdfghjklqwertyuiopzxcvbnm")
+        tf.addRow("Jump label letters (f):", self.text_labels)
+        tf.addRow("", QLabel("<small>Needs OCR (above). Keys: <b>h j k l w b 0 $ gg G</b> move (counts work: 5w), "
+                             "<b>v</b> / <b>V</b> select words / lines, <b>y</b> copy (<b>yy</b> line, <b>yw</b> word), "
+                             "<b>p</b> paste into a text field, <b>P</b> paste where the keyboard is, <b>f</b> jump by label, "
+                             "<b>/</b> search (<b>n</b> / <b>N</b>), <b>Esc</b> back. <b>Ctrl+Tab</b> goes through all modes.</small>",
+                             textFormat=Qt.RichText, wordWrap=True))
+        f.addRow(tbox)
         return w
 
     def keys_tab(self):
@@ -692,6 +708,9 @@ class SettingsWindow(QWidget):
         self.mouse_open_in.setCurrentIndex(max(0, self.mouse_open_in.findData(mouse["open_in"])))
         self.mouse_fallback.setChecked(bool(mouse.get("fallback_grid", True)))
         self.mouse_ocr.setChecked(bool(mouse.get("ocr", True)))
+        text = {**d["text"], **cfg.get("text", {})}
+        self.text_dim.setValue(int(text["dim"])); self.text_labels.setText(str(text["labels"]))
+        self.text_join.setCurrentIndex(max(0, self.text_join.findData(text["join_lines"])))
         ocr = {**d["ocr"], **cfg.get("ocr", {})}
         self.ocr_lang.setText(str(ocr["lang"])); self.ocr_conf.setValue(int(ocr["min_confidence"]))
         self.ocr_timeout.setValue(int(ocr["timeout_ms"])); self.screen_width.setValue(int(mouse.get("screen_width", 0)))
@@ -754,6 +773,8 @@ class SettingsWindow(QWidget):
         cfg.setdefault("edit", {}).update(step=self.edit_step.value())
         cfg.setdefault("clipboard", {}).update(enabled=self.clip_on.isChecked())
         cfg.setdefault("accessibility", {}).update(offer_restart=self.offer_restart.isChecked(), enable_on_start=self.enable_on_start.isChecked())
+        cfg.setdefault("text", {}).update(dim=self.text_dim.value(), join_lines=self.text_join.currentData(),
+                                          labels=self.text_labels.text().strip().lower() or self.defaults["text"]["labels"])
         cfg.setdefault("ocr", {}).update(lang=self.ocr_lang.text().strip() or "eng", min_confidence=float(self.ocr_conf.value()),
                                          timeout_ms=self.ocr_timeout.value())
         cfg["search"].update(windows=self.windows.isChecked(), apps=self.apps_search.isChecked(), panel=self.panel_labels.isChecked())

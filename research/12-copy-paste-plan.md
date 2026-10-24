@@ -1,7 +1,9 @@
 # 12 — Plan: copying text from anywhere on screen
 
-Status: **milestone 1 done** (the selection model, `palette/vimvibe_select.py`, 11 tests in `test_select.py`);
-milestones 2–4 not built. Written 2026-10-24 after OCR (tesseract) became part of vimvibe.
+Status: **milestones 1 and 2 done** and shipped as **text mode (Ctrl+T)**; milestones 3 (exact text from AT-SPI)
+and 4 (measurements) not built. The design was refined with the maintainer's "buffer" plan: screenshot the whole
+screen → build a virtual buffer of the words exactly where they are → navigate it as a read-only Vim buffer; copy with
+`y`, paste into a detected text field with `p` (or where the keyboard is with `P`); nothing is ever edited. Written 2026-10-24 after OCR (tesseract) became part of vimvibe.
 
 ## Why this comes back
 
@@ -72,6 +74,8 @@ overlay. The app is never touched, so this works the same in every app.
    (by tesseract's line numbers when given, otherwise by vertical overlap); `Selection` holds anchor and cursor and
    implements `w b j k 0 $ gg G` with counts (`j`/`k` keep the column), `jump` for a second label, line mode, and
    `text()` / `rects()` for copying and drawing.
-2. OCR words mode plus `TextRegion()`, then copy mode working on OCR text only. This alone covers every app.
+2. ✅ OCR words (`ocr::read_words`, `TextCapture()` + the `TextWords` signal) and text mode in the overlay
+   (Ctrl+T; `Buffer` in `vimvibe_select.py`: Vim motions, v / V, y / yy / yw / y$, p / P, f label jump, / search;
+   column-aware j / k). Works in every app.
 3. AT-SPI Text source for exact text in accessible apps.
 4. Settings, docs, and the measurements recorded here.

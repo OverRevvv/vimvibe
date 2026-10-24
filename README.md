@@ -99,6 +99,8 @@ you want Space + H/J/K/L arrow keys).
 | Scroll | hold **Space** + **J K H L** (or **D** / **U**) |
 | Text fields (like Vimium) | **Ctrl+I** in any mode, again for the next one, then **Enter** |
 | Keyboard mouse | **Ctrl+G** (grid) · **Ctrl+M** (H J K L movement) |
+| Copy / paste any text on screen (Vim keys) | **Ctrl+T** (text mode): move, **v** select, **y** copy, **p** paste into a field |
+| Next / previous mode | **Ctrl+Tab** / **Ctrl+Shift+Tab** |
 | Switch window / launch app | type its name, **Enter** |
 | Settings / quit | **Ctrl+Shift+,** / **Meta+Shift+Q** |
 
