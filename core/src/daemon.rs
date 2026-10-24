@@ -54,6 +54,14 @@ pub(crate) fn name() -> String {
 pub(crate) const PATH: &str = "/org/vimvibe/Daemon";
 /// Window title of the palette UI (see palette/vimvibe_palette.py); never a target.
 const UI_CAPTION: &str = "vimvibe-palette";
+
+/// True when a focus report is vimvibe's own overlay, which must never become the target. The caption is not enough:
+/// the layer-shell overlay can be reported with no caption (measured: after scrolling made it input-transparent, a
+/// re-read labelled vimvibe's own search field), so the process is checked too.
+fn is_own_ui(f: &kwin::FocusInfo) -> bool {
+    f.caption == UI_CAPTION
+        || std::fs::read(format!("/proc/{}/cmdline", f.pid)).is_ok_and(|c| String::from_utf8_lossy(&c).contains("vimvibe_palette.py"))
+}
 /// KDE shortcut component (the group shown in System Settings → Shortcuts): `vimvibe`, `vimvibe-dev`, ...
 pub(crate) fn component() -> String {
     config::dir_name()
@@ -93,6 +101,8 @@ struct Snapshot {
     extra: std::collections::HashMap<usize, Extra>,
     /// Elements of open menus: listed first when nothing is typed (the menu is what the user is looking at).
     in_menu: std::collections::HashSet<usize>,
+    /// The window this snapshot was taken of: `Refresh` re-reads exactly that window.
+    focus: Option<kwin::FocusInfo>,
 }
 
 /// What activating a non-AT-SPI result does.
@@ -560,7 +570,11 @@ impl Daemon {
     /// Re-read the same window (Shortcat's Cmd+R): drops the snapshot without `Closed`, then emits `Opened` again.
     async fn refresh(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         wait_scroll_idle(&self.0).await; // labels must match where a running glide ends
-        self.0.snap.lock().await.take();
+        // re-read the window the snapshot was taken of, whatever KWin reported in between (scrolling can make it
+        // report vimvibe's own overlay)
+        if let Some(f) = self.0.snap.lock().await.take().and_then(|s| s.focus) {
+            *self.0.focus.lock().await = Some(f);
+        }
         open(&self.0, &em).await.to_string()
     }
 
@@ -1145,10 +1159,10 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
     end_insert(sh).await; // opening vimvibe by hand ends a typing session (Esc is the user's again)
     let t0 = Instant::now();
     let cfg = config::load(); // re-read every time: edits apply without a restart
-    let cached = sh.focus.lock().await.clone();
+    let cached = sh.focus.lock().await.clone().filter(|f| !is_own_ui(f));
     let focus = match cached {
         Some(f) => Some(f),
-        None if kwin::on_kde() => kwin::active_window(Duration::from_millis(300)).await, // watcher not running or silent so far
+        None if kwin::on_kde() => kwin::active_window(Duration::from_millis(300)).await.filter(|f| !is_own_ui(f)), // watcher not running or silent so far
         None => None,
     };
     let t_focus = t0.elapsed();
@@ -1322,7 +1336,7 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
             "passive": popup_mode,
             "ms": {"focus": ms(t_focus), "window": ms(t_win), "total": ms(t0.elapsed())},
         });
-        *sh.snap.lock().await = Some(Snapshot { hints, els, last: vec![], geometry, extra, in_menu });
+        *sh.snap.lock().await = Some(Snapshot { hints, els, last: vec![], geometry, extra, in_menu, focus: focus.clone() });
         let generation = sh.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         if popup_mode {
             match crate::keygrab::grab(sh.a11y.connection(), &sh.keys, crate::keygrab::MODE_POPUP).await {
@@ -1505,7 +1519,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
                         if std::env::var_os("VIMVIBE_DEBUG").is_some() {
                             eprintln!("focus report: {} pid {}", f.class, f.pid);
                         }
-                        if f.caption == UI_CAPTION {
+                        if is_own_ui(&f) {
                             continue; // keep the last real target; otherwise a quick re-trigger would snapshot the palette itself
                         }
                         *sh2.focus.lock().await = Some(f);

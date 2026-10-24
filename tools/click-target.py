@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""A throwaway Qt window for testing clicks by hand without touching your real apps: a plain button, a menu button, a
-combo box and a button that reports double clicks. Every event is appended to a log file (default
+"""A throwaway Qt window for testing clicks and scrolling by hand without touching your real apps: a plain button, a
+menu button, a combo box, a button that reports double clicks and a long list to scroll. Every event is appended to a log file (default
 /tmp/vimvibe-click-target.log), so you can check what an action really did.
 
     python3 tools/click-target.py [LOGFILE]       # then open vimvibe over the "click-target" window
@@ -9,7 +9,7 @@ See CONTRIBUTING.md → "Testing by hand" for the busctl commands that drive it.
 import os, sys, time
 
 from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QApplication, QComboBox, QMenu, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QListWidget, QMenu, QPushButton, QVBoxLayout, QWidget
 
 LOG = sys.argv[1] if len(sys.argv) > 1 else "/tmp/vimvibe-click-target.log"
 log = open(LOG, "w", buffering=1)
@@ -49,7 +49,9 @@ def main():
     menu_button.setMenu(m); lay.addWidget(menu_button)
     combo = QComboBox(); combo.addItems(["a", "b", "c"]); combo.currentTextChanged.connect(lambda t: note(f"combo {t}")); lay.addWidget(combo)
     lay.addWidget(DoubleButton("Dbl"))
-    w.resize(260, 220); w.show(); note(f"started pid {os.getpid()}")
+    items = QListWidget(); items.addItems([f"Row {i}" for i in range(200)])
+    items.verticalScrollBar().valueChanged.connect(lambda v: note(f"scrolled {v}")); lay.addWidget(items)
+    w.resize(300, 520); w.show(); note(f"started pid {os.getpid()}")
     sys.exit(app.exec())
 
 

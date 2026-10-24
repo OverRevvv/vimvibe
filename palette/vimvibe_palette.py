@@ -153,6 +153,7 @@ class Overlay(QWidget):
         self.panel = QRectF()
         self.tap = {}         # modifier key -> press time (ms), cleared when another key comes in between
         self.ctrl_taps = 0
+        self.dialog_open = False  # a modal dialog of ours (the Chromium restart offer) has the keyboard
         self.enter_timer = QTimer(self); self.enter_timer.setSingleShot(True)  # waits for a possible second Enter (double click)
         self.enter_timer.timeout.connect(self.enter_fire)
         self.enter_pending = None   # what the waiting Enter will do if no second one comes: a callable taking the action name
@@ -313,7 +314,11 @@ class Overlay(QWidget):
         yes = box.addButton("Restart it", QMessageBox.AcceptRole)
         box.addButton("Not now", QMessageBox.RejectRole)
         box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        box.exec()
+        self.dialog_open = True  # the dialog must keep the keyboard: no regrab while it is up
+        try:
+            box.exec()
+        finally:
+            self.dialog_open = False
         if box.clickedButton() is not yes:
             return
         res = self.call("RestartWithAccessibility", int(app["pid"]))
@@ -680,6 +685,8 @@ class Overlay(QWidget):
         self.daemon.asyncCall("ScrollEnd")
         if self.windowHandle():
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            # the wheel events activated the app below: take the keyboard back now, so the next Space + J works too
+            QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))
         if refresh:
             # the old labels are wrong once the content has moved: draw nothing until the new ones arrive, then show
             # them all at once (never the stale ones, never a staggered fade-in)
@@ -985,20 +992,29 @@ class Overlay(QWidget):
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
 
     def event(self, ev):
-        """While a mouse mode is active, losing the keyboard (a click in the app below activates it) is answered by
-        taking it back, so the mode keeps working without interruption."""
-        if ev.type() == QEvent.WindowDeactivate and self.mouse in ("grid", "move") and self.isVisible():
-            self.stop_move()  # the key releases of held direction keys will go to the app: don't keep drifting
+        """Losing the keyboard while the overlay is on screen (a click from a mouse mode, or the wheel events of a
+        scroll, activate the app below) is answered by taking it back, in every mode: otherwise the overlay stays
+        drawn but the next keys (Space + J...) reach the app. Not while scrolling or in arrow mode, where the app is
+        meant to have the input, and not while a dialog of ours is open."""
+        if ev.type() == QEvent.WindowDeactivate and self.keeps_keyboard():
+            if self.mouse in ("grid", "move"):
+                self.stop_move()  # the key releases of held direction keys will go to the app: don't keep drifting
             QTimer.singleShot(80, self.regrab_keyboard)
         return super().event(ev)
 
-    def regrab_keyboard(self):
-        """Take the keyboard back after the app below was clicked (the click activated that window) by asking to be
-        activated again, with no hiding or flicker. Only while a mouse mode is still active and the overlay isn't."""
+    def keeps_keyboard(self):
+        """True when the overlay is supposed to hold the keyboard right now."""
+        return (self.isVisible() and not self.passive and not self.scrolling and not self.arrowing
+                and not self.dialog_open)
+
+    def regrab_keyboard(self, force=False):
+        """Take the keyboard back by asking to be activated again, with no hiding or flicker. Rate-limited to once a
+        second (never loop if the compositor won't give it back) unless `force` (the end of a scroll, which is known to
+        have moved the focus)."""
         now = time.monotonic()
-        if now - self.last_regrab < 1.0:  # never loop if the compositor won't give the keyboard back
+        if not force and now - self.last_regrab < 1.0:
             return
-        if self.mouse in ("grid", "move") and self.isVisible() and not self.isActiveWindow():
+        if self.keeps_keyboard() and not self.isActiveWindow():
             self.last_regrab = now
             self.windowHandle().requestActivate()  # asking again is enough: the overlay never leaves the screen
             self.activateWindow()
