@@ -95,10 +95,12 @@ you want Space + H/J/K/L arrow keys).
 |---|---|
 | Open / close | **Meta+Shift+Space** (**Esc Esc** also closes) |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
-| Right / double / middle click | **Ctrl+Enter** / **Alt+Enter** / **Shift+Enter** |
+| Right / double / middle click | **Ctrl+Enter** / **Enter twice** / **Shift+Enter** |
 | Scroll | hold **Space** + **J K H L** (or **D** / **U**) |
-| Text fields (like Vimium) | **Ctrl+I**, then **Enter** |
+| Text fields (like Vimium) | **Ctrl+I** in any mode, again for the next one, then **Enter** |
 | Keyboard mouse | **Ctrl+G** (grid) · **Ctrl+M** (H J K L movement) |
+| Copy / paste any text on screen (Vim keys) | **Ctrl+T** (text mode): move, **v** select, **y** copy, **p** paste into a field |
+| Next / previous mode | **Ctrl+Tab** / **Ctrl+Shift+Tab** |
 | Switch window / launch app | type its name, **Enter** |
 | Settings / quit | **Ctrl+Shift+,** / **Meta+Shift+Q** |
 
@@ -109,7 +111,8 @@ The full list of keys, modes and settings is in the [documentation](docs/using.m
 | | |
 |---|---|
 | [Using vimvibe](docs/using.md) | every key, scrolling, the keyboard mouse, text fields, accessibility, troubleshooting, commands |
-| [Configuration](docs/configuration.md) | the Settings window and every `config.toml` option |
+| [Configuration](docs/configuration.md) | the Settings window, every `config.toml` option, export / import as JSON |
+| [How it works](docs/architecture.md) | the logic behind every feature: opening, labels, clicking, keys, scrolling, mouse, OCR |
 | [Development](docs/development.md) | build, dev profile, code layout, D-Bus API |
 | [Shortcat parity](docs/shortcat-parity.md) · [Limitations](docs/limitations.md) | what matches Shortcat, what does not yet |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | conventions and checks |

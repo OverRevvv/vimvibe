@@ -12,11 +12,13 @@ Every key and mode, in detail. New here? Start with the [Overview](../README.md)
 | Scroll | hold **Space** + **J** (down) / **K** (up) / **H** (left) / **L** (right), or **D** / **U** — scrolls the selected element, or the window; **Shift** = faster; release Space for fresh labels ([details](#scrolling-and-arrow-keys)) |
 | Arrow keys in the app | hold **Space** + **Ctrl** + **H J K L** — ← ↓ ↑ → (needs the keyboard permission); keep Space held and press H J K L |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
-| Right click / double click / middle click | **Ctrl+Enter** / **Alt+Enter** / **Shift+Enter** |
+| Right click / double click / middle click | **Ctrl+Enter** / tap **Enter** twice, like a mouse / **Shift+Enter** |
 | Move the pointer onto it (hover) | off by default (bind `tap_hover` in Settings → Keys, e.g. a tapped Ctrl) |
 | Give it keyboard focus (e.g. a text field) | the same key, tapped twice |
 | Act on result row *n* / just select it | **Ctrl+1…9** / **Ctrl+Shift+1…9** |
 | Move the selection | **↑ ↓**, **Tab / Shift+Tab**, **Ctrl+N / Ctrl+P**, **PageUp / PageDown**, mouse wheel |
+| Text mode: copy / paste any text on screen with Vim keys | **Ctrl+T** ([details](#text-mode-copy-and-paste-from-anything-on-screen)) |
+| Next / previous mode (labels, grid, pointer, text) | **Ctrl+Tab** / **Ctrl+Shift+Tab** |
 | Mouse grid: pick a spot on screen by typing letters | **Ctrl+G**, then two letters per zoom level, **Enter** clicks ([details](#keyboard-mouse)) |
 | Move the pointer with the keyboard | **Ctrl+M**, then hold **H J K L** (**Shift** faster, **Alt** precise), **Enter** clicks |
 | Hide / show the search panel (labels stay) | **Space** while the search is empty (or while the panel is hidden), or **Ctrl+Space** any time ([rebind it](#customizing-keys)). The choice is remembered: a hidden panel stays hidden on the next opens until you bring it back |
@@ -116,7 +118,7 @@ is divided again; keep going as deep as you like (4 times by default). Then:
 
 | Key | Does |
 |---|---|
-| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Alt+Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
+| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Enter Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
 | **Space** | only move the pointer there, no click |
 | **Backspace** | zoom out one step (or drop a half-typed cell name) |
 | **Ctrl+Shift+G** | switch between the window and the whole screen |
@@ -130,8 +132,9 @@ Clicking a cell with the mouse zooms into it; right click zooms out.
 make a diagonal. **Shift** is faster, **Alt** is precise. **Enter** clicks where the pointer is (same modifiers as above),
 **Space** leaves it there. **↑ ↓ ← →**, Page Up / Down, **Space + D / U** or **D / U** scroll what is under the pointer without leaving the mode. Holding **Space** and pressing **H J K L** scrolls ← ↓ ↑ → and the overlay stays (set *Space + H J K L* to "Arrow keys" in Settings to send real arrow keys instead; those hide the overlay while Space is held); a plain Space tap still leaves the pointer. **Esc** goes back to the search, and a second **Esc Esc** closes vimvibe. The page under the pointer shows hover effects as you move.
 
-**Text fields, like Vimium.** In the search, **Ctrl+I** shows only the text fields of the window (the query `field`);
-press it again for the next one, **Enter** focuses it. In the pointer movement, **Ctrl+I** clicks where the pointer is
+**Text fields, like Vimium.** **Ctrl+I** works in every mode (labels, grid, pointer movement): it shows only the text
+fields of the window (the query `field`); press it again for the next one, **Enter** focuses it. From the grid or the
+pointer movement it leaves that mode for the field list; if the app exposes no fields, it clicks where the pointer is
 and lets you type. In both cases vimvibe steps aside so the app gets every key, takes **Esc** system-wide (a KWin
 shortcut) and opens again over the window when you press it. If you go to another window instead, Esc is given back
 within a second. Activating any text field from the search does the same. (Terminals and combo boxes are left out: Esc
@@ -141,7 +144,8 @@ belongs to them.)
 screen is read with OCR (`spectacle` + `tesseract`; `[mouse] ocr`, on when both are installed) and every phrase becomes
 a label you can type and click, ~2 s; if nothing is found, or OCR is missing, the mouse grid opens instead, which works
 in every app (`[mouse] fallback_grid`). Icon-only buttons have no text, so reach those with the grid. On a scaled
-display set `[mouse] screen_width` to the logical screen width so OCR coordinates line up.
+display set `[mouse] screen_width` to the logical screen width so OCR coordinates line up. Language, accuracy and the
+time limit are in `[ocr]` (Settings → Mouse); how it works: [How it works → OCR](architecture.md#apps-without-accessibility-ocr-and-the-grid).
 
 **Edit mode (switched off for now — no key starts it; the `edit_mode` binding is commented out in `vimvibe_keys.py`).** Like Vimium, for every app: vimvibe hands the keyboard back
 to the app and takes a few plain keys system-wide (through KWin) until you leave, turning them into real keys:
@@ -161,7 +165,8 @@ A banner shows the mode; Meta+Shift+Space also ends it, and it ends by itself af
 keyboard permission (`vimvibe-core pointer-setup`) and KDE. A key press is one arrow press: holding a key does not repeat.
 Selecting works where Shift+arrows select in the app (text fields, editors, browsers with caret browsing).
 
-**Clipboard history — Ctrl+Shift+H** (anywhere in vimvibe) lists Klipper's history, newest first: type to filter,
+**Clipboard history — Ctrl+Shift+H** (anywhere in vimvibe) lists Klipper's history, newest first: **Ctrl+J** /
+**Ctrl+K** (or ↑ ↓, Ctrl+N / Ctrl+P) move, type to filter,
 **Enter** or **Ctrl+1…9** pastes the entry, **Esc** closes the picker only. In the search, **Ctrl+Y** copies the selected
 result's text and **Ctrl+Shift+V** clicks it and pastes the clipboard into it. Turn the clipboard keys off with
 *Clipboard* in Settings → Mouse (`[clipboard] enabled`). Clipboard contents are never logged or stored by vimvibe.
@@ -172,6 +177,57 @@ straight in the grid, or in whichever mode you used last — or turn the whole f
 (`mouse_grid`, `mouse_move`, `mouse_place`, `mouse_scope`, `mouse_back`; Enter and the click variants are the same keys
 as in the search). The pointer ends where you put it and stays there. It needs the pointer permission
 ([see above](#the-permission)); the grid covers the screen the window is on, and it is not available over Plasma popups.
+
+## Text mode (copy and paste from anything on screen)
+
+**Ctrl+T** (from any mode) turns the whole screen into a read-only **Vim buffer**. vimvibe takes a screenshot (it draws
+nothing while it does), reads every word with OCR (`tesseract`, about 2 s), and shows the words exactly where they are,
+each in a faint box. The caret starts on the first word of the window you opened vimvibe over. Nothing in the app is
+edited or moved: you navigate, select, copy and paste.
+
+| Keys | Does |
+|---|---|
+| **h** / **b**, **l** / **w** / **e** | previous / next word (across lines) |
+| **j** / **k** | line below / above, keeping the column. On screens with columns side by side (a sidebar, two windows), it stays in the caret's column |
+| **0** / **^**, **$** | start / end of the line |
+| **gg** / **G** | first / last word on screen |
+| a number first | repeat: **5w**, **3j** |
+| **v** / **V** | select words / whole lines; motions extend it; again (or **Esc**) stops selecting |
+| **y** (or **Enter**) while selecting | copy the selection to the clipboard |
+| **yy** / **Y**, **yw** (**3yw**), **y$**, **y0** | copy without selecting: the line, words from the caret, to the line end / start |
+| **p** | paste into a text field: vimvibe shows the window's text fields (Ctrl+I for the next one), **Enter** clicks the field and pastes |
+| **P** | paste where the keyboard is now (Ctrl+V in the app) |
+| **f** (or **s**) | a label on every word; type one to put the caret there |
+| **/** text **Enter**, then **n** / **N** | search the screen's words, next / previous match |
+| hold **Space** + **J** / **K** (or **E** / **Y**), **D** / **U**, **F** / **B**; the mouse wheel | scroll the app under the caret (a line step, half a page, a page) and read the screen again; the caret stays on its word. Space, not Ctrl, as in every mode: apps zoom when Ctrl is held during a scroll |
+| **j** / **k** past the bottom / top of the screen | scroll one line step and carry on, like Vim |
+| click a word | put the caret there |
+| **Ctrl+Shift+H** | the clipboard history |
+| **Esc** | cancel the label jump, search, count or selection; then back to the labels (**Esc Esc** closes vimvibe) |
+
+**Copying more than a screen.** The part of the screen you scroll becomes a growing document: after each scroll
+vimvibe works out how far the text moved (from the words both readings share, ignoring repeated words and the parts
+of the screen that did not move) and adds only the lines that came into view. So you can press **v** on the first
+word, scroll down through as many screens as you like (hold **Space** + **D**, or keep pressing **j**), and **y** copies
+everything from the start to the caret, in order and without repeated lines. The status line shows how many
+characters are selected. Moving the caret back onto text that has scrolled away (**k**, **gg**, a search hit) scrolls
+the app back to it. Things beside the scrolled part (a toolbar, another window) are not copied into the selection.
+
+Each scroll reads the screen again (about 2 s). The first scroll is one small step (vimvibe measures how far the
+app moves per wheel step); after that a step never moves more than half the scrolled area, so each reading overlaps
+the last one. If vimvibe still loses track (the page reloaded, or jumped), it says so and starts again from what is on
+screen.
+
+Copied lines keep their line breaks (or are joined with spaces: Settings → Mouse → Text mode). The text comes from OCR,
+so a misread letter is possible, and text that is not on screen (scrolled away, behind another window) is not in the
+buffer. It needs `spectacle` and `tesseract` and `[mouse] ocr` on.
+
+## Switching modes
+
+vimvibe has four modes: **labels** (the search, the default), the **mouse grid**, **pointer movement** and **text**.
+**Ctrl+Tab** goes to the next one, **Ctrl+Shift+Tab** to the previous one, from any of them; a short message names the
+mode you are in. Each also has its own key: Ctrl+G, Ctrl+M, Ctrl+T (press it again to go back to the labels). Modes
+that are off (the keyboard mouse in Settings) are skipped. What vimvibe opens in is `[mouse] open_in`.
 
 ## Customizing keys
 
@@ -185,7 +241,7 @@ possible by hand in `[keys]`; a value is a string or a list, and an empty list u
 toggle_panel = ["Space", "Ctrl+Space"] # hide / show the search panel (labels and typing keep working); plain Space only acts while the search is empty
 click = ["Return", "Enter"]
 right_click = ["Ctrl+Return"]
-double_click = ["Alt+Return"]
+double_click = []                      # unbound: tap Enter twice (within [behavior] double_tap_ms) instead
 middle_click = ["Shift+Return"]
 close = ["Escape"]
 settings = ["Ctrl+,", "Ctrl+Shift+,"]
@@ -203,6 +259,9 @@ mouse_move = ["Ctrl+M"]                # keyboard mouse: H J K L moves the point
 mouse_place = ["Space"]                # keyboard mouse: leave the pointer here, no click
 mouse_scope = ["Ctrl+Shift+G"]         # grid: window / whole screen
 mouse_back = ["Backspace"]             # grid: zoom out
+text_mode = ["Ctrl+T"]                 # text mode on / off
+next_mode = ["Ctrl+Tab"]               # next mode: labels -> grid -> pointer movement -> text
+prev_mode = ["Ctrl+Shift+Tab"]         # previous mode
 ```
 
 Limits: the global shortcuts that open and quit vimvibe are KDE shortcuts (System Settings → Shortcuts → *vimvibe*,
@@ -256,7 +315,7 @@ Accessibility is a session setting that is off by default on most distributions;
 ## Command reference
 
 ```text
-vimvibe start | stop (= quit) | restart | status | settings | logs | open | help
+vimvibe start | stop (= quit) | restart | status | settings | export FILE | import FILE | logs | open | help
 vimvibe doctor [--fix] [--fix-env] [--fix-chrome]
 
 vimvibe-core <command> [--app NAME] [--json] [--strategy auto|cache|walk] ...

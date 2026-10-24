@@ -120,10 +120,11 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 | `InsertStart()` | insert mode: take Esc system-wide until pressed (then vimvibe reopens) or the focus moves to another window |
 | `EditStart()` / `EditEnd()` | edit mode: take H J K L, U / D, V, Y, P, Esc / I system-wide (KWin shortcuts) and turn them into arrows, Home / End, selecting, Ctrl+C / V; emits `EditMode(visual)` |
 | `PointerHold(down)` | hold / release the left button |
+| `TextCapture()` | text mode: screenshot the whole screen now and return; the words follow in the `TextWords(json)` signal: `{ok, words: [{text, x, y, w, h, line}], ms}` (screen coordinates, `line` = tesseract's block.paragraph.line) |
 | `SendKeys(combo)` | close the overlay, then press `ctrl+c`, `ctrl+v`... in the window below |
 | `PointerScroll(dx, dy, x, y, here)` | scroll from the keyboard-mouse modes: move the pointer to (x, y) first unless `here`, then glide `dx`/`dy` tenths of a wheel notch; the pointer stays where it is |
 | `ArrowStart(dx, dy)`, `ArrowEnd(reopen)` | arrow-edit mode: hide, take the physical H/J/K/L/I, D/U, Space, Esc keys and send arrows; Space release reopens |
 | `Close()`, `Status() → json`, `Quit()` | `Quit` = Meta+Shift+Q |
-| signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()`, `Key(json)`, `OpenSettings()` | |
+| signals `Opened(json)`, `Closed()`, `Refused(json)`, `Quitting()`, `Key(json)`, `OpenSettings()`, `TextWords(json)` | |
 
 Try it: `gdbus call --session --dest org.vimvibe.Daemon --object-path /org/vimvibe/Daemon --method org.vimvibe.Daemon.Status`

@@ -6,7 +6,7 @@
 | Search elements by name, role words, synonyms | ✅ |
 | Letter labels (hints) on every element, typed to select | ✅ (2–3 letters; colour configurable) |
 | Label delay setting (immediately … 5 s, after input) | ✅ |
-| Enter click · Ctrl+Enter right click · double click | ✅ (double click = Alt+Enter) |
+| Enter click · Ctrl+Enter right click · double click | ✅ (double click = tap Enter twice, like a mouse) |
 | Tap Ctrl to hover · double-tap to focus | ✅ |
 | Cmd+number act on row · Cmd+Shift+number select | ✅ as Ctrl+number / Ctrl+Shift+number |
 | Option shows all labels | ✅ tap Alt |

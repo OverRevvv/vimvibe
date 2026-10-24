@@ -16,6 +16,8 @@
 //!   PointerScroll(dx, dy, x, y, here)   keyboard mouse: scroll under the pointer (after moving it to (x, y) unless `here`) without leaving the mouse mode
 //!   PointerHold(down)   keyboard mouse: hold / release the left button (drag a text selection with H J K L)
 //!   SendKeys(combo)   close the overlay, then press "ctrl+c" / "ctrl+v" ... in the window below (copy and paste)
+//!   TextCapture() -> json   text mode: screenshot the whole screen now (the overlay draws nothing meanwhile), then
+//!                         read its words in the background and emit `TextWords(json)` with them (see ocr.rs)
 //!   InsertStart()   insert mode: the user is typing into a field; Esc (taken system-wide) brings vimvibe back (see `insert_task`)
 //!   EditStart() / EditEnd()   edit mode: H J K L become arrow keys in the app, U / D Home / End, V selects, Y copies, P pastes
 //!   ArrowStart(dx, dy), ArrowEnd(reopen)            arrow-key mode (Space + H/J/K/L sends arrows to the app)
@@ -25,7 +27,7 @@
 //!   Quit()                shut down (same as the Meta+Shift+Q shortcut); emits `Quitting` first
 //!   Status() -> json      accessibility/KWin/shortcut state and the last timings
 //! Signals: Opened(json), Closed(), Refused(json), Quitting(), Key(json) (typed over a popup, see keygrab.rs),
-//! OpenSettings() (Ctrl+Shift+, pressed).
+//! OpenSettings() (Ctrl+Shift+, pressed), TextWords(json) (text mode: {"ok", "words": [{text, x, y, w, h, line}], "ms"}).
 //!
 //! Nothing runs while idle: no polling, the only wake-ups are D-Bus messages (hotkey, KWin focus reports, UI calls).
 
@@ -54,6 +56,14 @@ pub(crate) fn name() -> String {
 pub(crate) const PATH: &str = "/org/vimvibe/Daemon";
 /// Window title of the palette UI (see palette/vimvibe_palette.py); never a target.
 const UI_CAPTION: &str = "vimvibe-palette";
+
+/// True when a focus report is vimvibe's own overlay, which must never become the target. The caption is not enough:
+/// the layer-shell overlay can be reported with no caption (measured: after scrolling made it input-transparent, a
+/// re-read labelled vimvibe's own search field), so the process is checked too.
+fn is_own_ui(f: &kwin::FocusInfo) -> bool {
+    f.caption == UI_CAPTION
+        || std::fs::read(format!("/proc/{}/cmdline", f.pid)).is_ok_and(|c| String::from_utf8_lossy(&c).contains("vimvibe_palette.py"))
+}
 /// KDE shortcut component (the group shown in System Settings → Shortcuts): `vimvibe`, `vimvibe-dev`, ...
 pub(crate) fn component() -> String {
     config::dir_name()
@@ -93,6 +103,8 @@ struct Snapshot {
     extra: std::collections::HashMap<usize, Extra>,
     /// Elements of open menus: listed first when nothing is typed (the menu is what the user is looking at).
     in_menu: std::collections::HashSet<usize>,
+    /// The window this snapshot was taken of: `Refresh` re-reads exactly that window.
+    focus: Option<kwin::FocusInfo>,
 }
 
 /// What activating a non-AT-SPI result does.
@@ -460,6 +472,43 @@ impl Daemon {
         }
     }
 
+    /// Text mode, step 1: take a screenshot of the whole screen and return as soon as it is taken (the overlay hides its
+    /// drawing first, so the screenshot shows only the apps). A scroll still gliding is waited for first, so text mode
+    /// can scroll the app and read it again. Step 2 runs in the background: tesseract reads the words
+    /// and `TextWords(json)` delivers them. Refused when OCR is off or spectacle / tesseract are missing.
+    async fn text_capture(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        let cfg = config::load();
+        if !cfg.mouse.ocr {
+            return json!({"ok": false, "error": "text mode needs OCR, which is off (Settings → Mouse → OCR)"}).to_string();
+        }
+        if !crate::ocr::available() {
+            return json!({"ok": false, "error": "text mode needs spectacle and tesseract (sudo dnf install tesseract)"}).to_string();
+        }
+        // text mode scrolls the app and then reads the screen again: the screenshot must show where the glide ends
+        wait_scroll_idle(&self.0).await;
+        tokio::time::sleep(Duration::from_millis(60)).await; // the app repaints after its last scroll event
+        let png = crate::ocr::shot_path("text");
+        let t0 = Instant::now();
+        if let Err(e) = crate::ocr::screenshot(&png).await {
+            let _ = std::fs::remove_file(&png);
+            return json!({"ok": false, "error": format!("screenshot failed: {e}")}).to_string();
+        }
+        let em = em.to_owned();
+        tokio::spawn(async move {
+            let sw = Some(cfg.mouse.screen_width).filter(|w| *w > 0);
+            let payload = match crate::ocr::read_words(&png, sw, &cfg.ocr).await {
+                Ok(words) => json!({"ok": true, "words": words, "ms": ms(t0.elapsed())}),
+                Err(e) => json!({"ok": false, "error": e.to_string()}),
+            };
+            let _ = Daemon::text_words(&em, &payload.to_string()).await;
+        });
+        json!({"ok": true}).to_string()
+    }
+
+    /// Text mode: the words read from the screenshot `TextCapture` took (or the error).
+    #[zbus(signal)]
+    async fn text_words(emitter: &SignalEmitter<'_>, payload: &str) -> zbus::Result<()>;
+
     /// End edit mode without closing the overlay.
     async fn edit_end(&self) {
         end_edit(&self.0).await;
@@ -560,7 +609,11 @@ impl Daemon {
     /// Re-read the same window (Shortcat's Cmd+R): drops the snapshot without `Closed`, then emits `Opened` again.
     async fn refresh(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         wait_scroll_idle(&self.0).await; // labels must match where a running glide ends
-        self.0.snap.lock().await.take();
+        // re-read the window the snapshot was taken of, whatever KWin reported in between (scrolling can make it
+        // report vimvibe's own overlay)
+        if let Some(f) = self.0.snap.lock().await.take().and_then(|s| s.focus) {
+            *self.0.focus.lock().await = Some(f);
+        }
         open(&self.0, &em).await.to_string()
     }
 
@@ -650,6 +703,7 @@ impl Act {
 /// Do `act` on snapshot element `id`: close the overlay first, then window/title-bar/app results via KWin or the
 /// launcher, elements via the semantic ladder with the pointer as fallback. Returns the JSON result for the UI.
 async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'_>) -> Value {
+    let cfg = config::load();
     let (el, geometry, extra) = {
         let guard = sh.snap.lock().await;
         match guard.as_ref() {
@@ -673,6 +727,19 @@ async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'
         // normal elements: Click walks the semantic ladder, falling back to a pointer click when it asks for one;
         // Focus tries grab_focus, then clicks text-like roles; the rest (right click, hover, ...) are pointer actions
         match act {
+            // A real click first: it behaves exactly like the hardware mouse (popups open and stay open, the app sees
+            // a press), while an accessibility action can report success and still not do what a click does (a
+            // combo box's popup closes again once the window regains focus). The semantic ladder is the fallback
+            // for elements with no place on screen, when the pointer isn't set up, or `click_with = "semantic"`.
+            Act::Click if cfg.behavior.click_with != "semantic" && crate::pointer::is_set_up() && el.rect.2 > 0 && el.rect.3 > 0 && el.enabled && geometry.is_some() => {
+                match pointer_action(sh, &el, geometry, Act::Click).await {
+                    Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "pointer"})),
+                    Err(pe) => match el.activate(&sh.a11y, false).await {
+                        Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "semantic"})),
+                        Err(e) => Err(anyhow::anyhow!("{pe}; {e}")),
+                    },
+                }
+            }
             Act::Click => match el.activate(&sh.a11y, crate::pointer::is_set_up()).await {
                 Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "semantic"})),
                 Err(e) if e.downcast_ref::<crate::model::NeedsPointer>().is_some() => match pointer_action(sh, &el, geometry, Act::Click).await {
@@ -701,7 +768,7 @@ async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'
     match res {
         Ok(mut v) => {
             // focusing a text field means the user is going to type: Esc will bring vimvibe back
-            if matches!(act, Act::Click | Act::Focus) && is_input_role(&el.role) && sh.snap.lock().await.is_none() {
+            if cfg.behavior.insert_after_field && matches!(act, Act::Click | Act::Focus) && is_input_role(&el.role) && sh.snap.lock().await.is_none() {
                 if let Err(e) = begin_insert(sh.clone(), em.to_owned()).await {
                     eprintln!("insert mode: {e}");
                 }
@@ -746,7 +813,8 @@ async fn pointer_action(sh: &Shared, el: &Element, geometry: Option<(i32, i32, i
                 _ => (Button::Left, 1, "clicked"),
             };
             // a right click opens a menu where the pointer is, so it must stay there; plain clicks restore it
-            let restore = matches!(act, Act::Click | Act::Double | Act::Middle);
+            // (and so must the pointer when the click opens a popup: moving away would close a hover-driven one)
+            let restore = matches!(act, Act::Click | Act::Double | Act::Middle) && !matches!(el.role.as_str(), "ComboBox" | "PushButtonMenu" | "Menu");
             p.click_at(cx, cy, button, count, restore).await.map(|_| format!("{what} at ({cx:.0}, {cy:.0}) through the portal"))
         }
     };
@@ -1130,10 +1198,10 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
     end_insert(sh).await; // opening vimvibe by hand ends a typing session (Esc is the user's again)
     let t0 = Instant::now();
     let cfg = config::load(); // re-read every time: edits apply without a restart
-    let cached = sh.focus.lock().await.clone();
+    let cached = sh.focus.lock().await.clone().filter(|f| !is_own_ui(f));
     let focus = match cached {
         Some(f) => Some(f),
-        None if kwin::on_kde() => kwin::active_window(Duration::from_millis(300)).await, // watcher not running or silent so far
+        None if kwin::on_kde() => kwin::active_window(Duration::from_millis(300)).await.filter(|f| !is_own_ui(f)), // watcher not running or silent so far
         None => None,
     };
     let t_focus = t0.elapsed();
@@ -1250,7 +1318,7 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
         if els.is_empty() && !popup_mode && cfg.mouse.enabled && cfg.mouse.ocr && via == "fallback" && crate::ocr::available() {
             if let Some(g) = geometry.filter(|g| g.2 > 0) {
                 let sw = Some(cfg.mouse.screen_width).filter(|w| *w > 0);
-                match crate::ocr::read_window(g, sw, &win_app, &win_title, Duration::from_secs(8)).await {
+                match crate::ocr::read_window(g, sw, &win_app, &win_title, &cfg.ocr).await {
                     Ok(found) if !found.is_empty() => {
                         els = found;
                         via = "ocr";
@@ -1307,7 +1375,7 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
             "passive": popup_mode,
             "ms": {"focus": ms(t_focus), "window": ms(t_win), "total": ms(t0.elapsed())},
         });
-        *sh.snap.lock().await = Some(Snapshot { hints, els, last: vec![], geometry, extra, in_menu });
+        *sh.snap.lock().await = Some(Snapshot { hints, els, last: vec![], geometry, extra, in_menu, focus: focus.clone() });
         let generation = sh.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         if popup_mode {
             match crate::keygrab::grab(sh.a11y.connection(), &sh.keys, crate::keygrab::MODE_POPUP).await {
@@ -1490,7 +1558,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
                         if std::env::var_os("VIMVIBE_DEBUG").is_some() {
                             eprintln!("focus report: {} pid {}", f.class, f.pid);
                         }
-                        if f.caption == UI_CAPTION {
+                        if is_own_ui(&f) {
                             continue; // keep the last real target; otherwise a quick re-trigger would snapshot the palette itself
                         }
                         *sh2.focus.lock().await = Some(f);

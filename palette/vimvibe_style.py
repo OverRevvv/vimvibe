@@ -58,6 +58,9 @@ DEFAULTS = {
     },
     "hints": {"delay_ms": 0, "after_input": False, "auto_activate": False},
     "behavior": {"continuous": False, "continuous_delay_ms": 500,
+                 "double_tap_ms": 250,       # Enter pressed twice within this many ms double-clicks (0 = off: Enter clicks at once)
+                 "click_with": "pointer",    # Enter clicks with a real pointer click (like a mouse) or "semantic" (the app's action first)
+                 "insert_after_field": True,  # after a text field is clicked/focused, typing goes to the app and Esc comes back
                  "double_esc_close": True},  # Esc must be pressed twice to close vimvibe (one Esc only steps back / warns)
     "scroll": {
         "keys": "hjkl",              # layout of the direction keys: hjkl (Vim) or ijkl
@@ -94,6 +97,18 @@ DEFAULTS = {
         "speed": 500,                # pointer speed in px/s
         "fast": 3,                   # Shift multiplies the speed by this (Alt slows it down to a quarter)
         "accelerate": True,          # speed up while a key is held
+    },
+    "text": {                        # text mode (Ctrl+T): the words on screen as a Vim buffer
+        "dim": 15,                   # darken the screen behind the buffer, percent 0–60
+        "join_lines": "newline",     # copied lines are joined with: "newline" or "space"
+        "labels": "asdfghjklqwertyuiopzxcvbnm",  # letters of the f-jump labels (home row first)
+        "line_notches": 1.0,         # Space+J / K, Space+E / Y and j / k past the screen edge scroll this many wheel notches
+        "page_notches": 8.0,         # Space+F / B scroll this many notches (Space+D / U half of it)
+    },
+    "ocr": {                         # the OCR layer for apps that expose nothing (switched on/off by [mouse] ocr)
+        "lang": "eng",               # tesseract language(s), e.g. "eng+deu" (each needs its traineddata installed)
+        "min_confidence": 55.0,      # 0-100: lower finds more text, and more noise
+        "timeout_ms": 8000,          # give up after this long and open the grid instead
     },
     "search": {"windows": True, "apps": True, "panel": True},
     # key bindings: action -> "Ctrl+Space" or a list; absent = the default in vimvibe_keys.py (the table starts empty so
@@ -185,6 +200,58 @@ def write_config(cfg):
     with open(tmp, "w") as f:
         f.write("\n".join(lines))
     os.replace(tmp, CONFIG)
+
+
+EXPORT_FORMAT = "vimvibe-settings"  # marks a JSON file as a vimvibe settings export
+
+
+def export_settings(path, version=""):
+    """Write every setting to a JSON file: the full config (defaults filled in, so the file documents every option),
+    the key bindings as they are in effect (not only the changed ones), and whether vimvibe starts at login. Keys a
+    later release adds are filled from its defaults on import, so an old export stays usable."""
+    import vimvibe_keys as keys
+    cfg = read_config()
+    data = {
+        "format": EXPORT_FORMAT, "format_version": 1, "vimvibe_version": version, "profile": PROFILE or "stable",
+        "config": {s: v for s, v in cfg.items() if s != "keys"},
+        "keys": {a: keys.effective(cfg.get("keys"), a) for a in keys.DEFAULTS},
+        "launch_at_login": os.path.exists(AUTOSTART),
+    }
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def import_settings(path):
+    """Read a JSON export and make it the current settings (config.toml is rewritten). Sections and values are merged
+    over the defaults; key bindings equal to the defaults are dropped again so later releases can improve them; values
+    of the wrong type are ignored. Returns the export's dict (the caller decides about `launch_at_login`). Raises
+    ValueError for a file that is not a vimvibe export."""
+    import vimvibe_keys as keys
+    with open(path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or data.get("format") != EXPORT_FORMAT or not isinstance(data.get("config"), dict):
+        raise ValueError("not a vimvibe settings export")
+    cfg = json.loads(json.dumps(DEFAULTS))
+    for section, values in data["config"].items():
+        if not isinstance(values, dict):
+            continue
+        dest = cfg.setdefault(section, {})
+        for k, v in values.items():
+            if k in dest and dest[k] is not None and type(dest[k]) is not type(v) and not (isinstance(dest[k], float) and isinstance(v, int)):
+                continue  # e.g. a string where a number belongs: keep the default
+            dest[k] = v
+    cfg["keys"] = {}
+    for action, combo in (data.get("keys") or {}).items():
+        if action in keys.DEFAULTS and isinstance(combo, (str, list)):
+            combo = [combo] if isinstance(combo, str) else [str(c) for c in combo]
+            if combo != keys.DEFAULTS[action]:
+                cfg["keys"][action] = combo
+    write_config(cfg)
+    return data
+
+
+AUTOSTART = os.path.join(CONFIG_HOME, "autostart", "vimvibe.desktop")
 
 
 def readable_on(c):

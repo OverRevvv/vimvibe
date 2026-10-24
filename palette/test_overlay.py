@@ -46,6 +46,7 @@ class OverlayKeys(unittest.TestCase):
         self.o.meta = {"origin": [0, 0, 800, 600]}
         self.o.resize(800, 600); self.o.show(); self.o.create()
         self.o.hits, self.o.elements = [], []
+        self.o.cfg["behavior"]["double_tap_ms"] = 0   # most tests want Enter to click at once; the double-tap test turns it on
 
     def key(self, k, mods=Qt.NoModifier, text="", release=False):
         """Send a key press (or release) to the search field's event filter, as Qt would."""
@@ -162,12 +163,14 @@ class OverlayKeys(unittest.TestCase):
         self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "stay:move")
 
     def test_mouse_modes_stay_open_after_a_click(self):
-        """Enter clicks without leaving the mouse mode (Alt+Enter double, Ctrl+Alt+Enter middle); with
+        """Enter clicks without leaving the mouse mode (Enter twice double, Ctrl+Alt+Enter middle); with
         stay_after_click off the overlay closes as before."""
         self.o.enter_move(); self.daemon.calls.clear()
         self.tap(Qt.Key_Return); QTest.qWait(150)
-        self.tap(Qt.Key_Return, Qt.AltModifier); QTest.qWait(150)
+        self.o.cfg["behavior"]["double_tap_ms"] = 200
+        self.tap(Qt.Key_Return); self.tap(Qt.Key_Return); QTest.qWait(150)   # two Enters in time: one double click
         self.tap(Qt.Key_Return, Qt.ControlModifier | Qt.AltModifier); QTest.qWait(150)
+        self.o.cfg["behavior"]["double_tap_ms"] = 0
         acts = [c[1][3] for c in self.daemon.named("PointerAct")]
         self.assertEqual(acts, ["stay:click", "stay:double", "stay:middle"]); self.assertEqual(self.o.mouse, "move")
         self.o.enter_grid(); self.tap(Qt.Key_Return); QTest.qWait(150)
@@ -175,6 +178,119 @@ class OverlayKeys(unittest.TestCase):
         self.o.cfg["mouse"]["stay_after_click"] = False
         self.tap(Qt.Key_Return); QTest.qWait(150)
         self.assertIsNone(self.o.mouse); self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "click")
+
+    def test_enter_double_tap_double_clicks(self):
+        """One Enter clicks after the double-tap time; two within it double-click the same element (like the mouse);
+        Alt+Enter no longer does anything; the right-click key never waits."""
+        el = {"name": "x", "role": "Button", "enabled": True}
+        self.o.hits = [{"id": 7, "hint": "SA", "element": el}, {"id": 8, "hint": "SB", "element": el}]; self.o.sel = 0
+        self.o.cfg["behavior"]["double_tap_ms"] = 120
+        self.tap(Qt.Key_Return); self.assertFalse(self.daemon.named("ActivateWith"))   # waiting for a second Enter
+        QTest.qWait(300)
+        self.assertEqual([c[1][1] for c in self.daemon.named("ActivateWith")], ["click"])
+        self.daemon.calls.clear(); self.o.show(); self.o.sel = 1
+        self.tap(Qt.Key_Return); self.tap(Qt.Key_Return); QTest.qWait(300)
+        self.assertEqual([(c[1][0], c[1][1]) for c in self.daemon.named("ActivateWith")], [(8, "double")])
+        self.daemon.calls.clear(); self.o.show()
+        self.tap(Qt.Key_Return, Qt.AltModifier); QTest.qWait(300)
+        self.assertFalse(self.daemon.named("ActivateWith"))
+        self.tap(Qt.Key_Return, Qt.ControlModifier); QTest.qWait(150)
+        self.assertEqual([c[1][1] for c in self.daemon.named("ActivateWith")], ["right"])
+
+    def test_ctrl_i_works_from_every_mode(self):
+        """Ctrl+I in the grid or the movement mode leaves it for the text-field list when the window has fields
+        (the same list the search shows, Ctrl+I again = next); with none, it clicks here and types."""
+        real = self.o.call
+        self.o.call = lambda m, *a: {"hits": [{"id": 1, "hint": "AA", "element": {"name": "f", "role": "Entry", "enabled": True}}]} if m == "Search" else real(m, *a)
+        for enter in (self.o.enter_grid, self.o.enter_move):
+            enter(); self.daemon.calls.clear()
+            self.key(Qt.Key_I, Qt.ControlModifier, "\t")
+            self.assertIsNone(self.o.mouse); self.assertEqual(self.o.edit.text(), "field")
+            self.assertFalse(self.daemon.named("PointerAct"))
+            self.o.edit.clear()
+        self.o.call = real
+        self.o.hide()   # nothing of this overlay may paint during the next test
+
+    def test_clipboard_history_vim_keys(self):
+        """In the clipboard history Ctrl+J / Ctrl+K move down / up (plain j / k still filter)."""
+        P.vimvibe_clip.history = lambda: ["one", "two", "three"]
+        self.key(Qt.Key_H, Qt.ControlModifier | Qt.ShiftModifier, "H")
+        self.key(Qt.Key_J, Qt.ControlModifier, "\n"); self.key(Qt.Key_J, Qt.ControlModifier, "\n")
+        self.assertEqual(self.o.clip["sel"], 2)
+        self.key(Qt.Key_K, Qt.ControlModifier, "\x0b")
+        self.assertEqual(self.o.clip["sel"], 1)
+        self.o.clip = None
+
+    def test_text_mode_copy_and_paste(self):
+        """Ctrl+T captures the screen (nothing is drawn meanwhile), the words become a buffer, Vim keys select and y
+        copies; p goes to the text-field list and Enter there pastes; P pastes where the keyboard is."""
+        copied = []
+        P.vimvibe_clip.set_text = copied.append
+        self.key(Qt.Key_T, Qt.ControlModifier, "\x14")
+        self.assertEqual(self.o.current_mode(), "text"); self.assertEqual(self.o.text["state"], "capturing")
+        QTest.qWait(250)
+        self.assertTrue(self.daemon.named("TextCapture")); self.assertEqual(self.o.text["state"], "reading")
+        words = [{"text": "Hello", "x": 10, "y": 10, "w": 40, "h": 12, "line": "1.1.1"},
+                 {"text": "world", "x": 60, "y": 10, "w": 40, "h": 12, "line": "1.1.1"},
+                 {"text": "again", "x": 10, "y": 30, "w": 40, "h": 12, "line": "1.1.2"}]
+        self.o.text_words(P.json.dumps({"ok": True, "words": words}))
+        self.assertEqual(len(self.o.text["buf"]), 3)
+        for ch in "vjy":
+            self.tap(getattr(Qt, "Key_" + ch.upper()), text=ch)
+        self.assertEqual(copied, ["Hello world\nagain"])
+        el = {"name": "Field", "role": "Entry", "enabled": True}
+        self.o.call = (lambda real: lambda m, *a: {"hits": [{"id": 4, "hint": "FI", "element": el}]} if m == "Search" else real(m, *a))(self.o.call)
+        self.tap(Qt.Key_P, text="p")
+        self.assertIsNone(self.o.text); self.assertTrue(self.o.paste_target); self.assertEqual(self.o.edit.text(), "field")
+        self.daemon.calls.clear()
+        self.tap(Qt.Key_Return); QTest.qWait(600)
+        self.assertEqual(self.daemon.named("ActivateWith")[0][1], (4, "click"))
+        self.assertEqual(self.daemon.named("SendKeys")[0][1], ("ctrl+v",))
+        self.o.hide()
+
+    def test_text_mode_scroll_reads_again(self):
+        """Space + D scrolls the app under the caret (nothing drawn, input let through), the screen is read again, the
+        caret stays on its word; j past the bottom scrolls one line step and is replayed on the new words."""
+        self.key(Qt.Key_T, Qt.ControlModifier, "\x14"); QTest.qWait(250)
+        words = [{"text": t, "x": 10, "y": y, "w": 40, "h": 12, "line": f"1.1.{y}"} for t, y in
+                 (("alpha", 10), ("bravo", 30), ("charlie", 50), ("delta", 70))]
+        self.o.text_words(P.json.dumps({"ok": True, "words": words}))
+        self.tap(Qt.Key_J, text="j")                                     # caret on "bravo"
+        self.daemon.calls.clear()
+        self.key(Qt.Key_Space, text=" ")                                 # Space held + D: half a page down
+        self.key(Qt.Key_D, text="d")
+        self.key(Qt.Key_Space, text=" ", release=True)
+        scroll = self.daemon.named("PointerScroll")[0][1]
+        self.assertEqual(scroll[:2], (0, 10)); self.assertEqual(self.o.text["state"], "capturing")   # first step: 1 notch (calibration)
+        QTest.qWait(250); self.assertTrue(self.daemon.named("TextCapture"))
+        moved = [dict(w, y=w["y"] - 20) for w in words[1:]] + [{"text": "echo", "x": 10, "y": 70, "w": 40, "h": 12, "line": "1.1.90"}]
+        self.o.text_words(P.json.dumps({"ok": True, "words": moved}))
+        buf = self.o.text["buf"]
+        self.assertEqual(buf.layout.words[buf.sel.cursor]["text"], "bravo")  # carried over by the 20 px shift
+        self.tap(Qt.Key_G, Qt.ShiftModifier, "G")                         # caret on "echo", the last line
+        self.daemon.calls.clear()
+        self.tap(Qt.Key_J, text="j")                                     # no line below: scroll and replay j
+        self.assertEqual(self.daemon.named("PointerScroll")[0][1][:2], (0, 10))
+        QTest.qWait(250)
+        more = [dict(w, y=w["y"] - 20) for w in moved[1:]] + [{"text": "foxtrot", "x": 10, "y": 70, "w": 40, "h": 12, "line": "1.1.99"}]
+        self.o.text_words(P.json.dumps({"ok": True, "words": more}))
+        buf = self.o.text["buf"]
+        self.assertEqual(buf.layout.words[buf.sel.cursor]["text"], "foxtrot")
+        self.o.leave_text(); self.o.hide()
+
+    def test_mode_cycle(self):
+        """Ctrl+Tab goes labels -> grid -> pointer movement -> text -> labels; Ctrl+Shift+Tab goes back."""
+        seen = []
+        for _ in range(4):
+            seen.append(self.o.current_mode())
+            self.o.mode_key("next_mode")
+        self.assertEqual(seen, ["search", "grid", "move", "text"])
+        self.assertEqual(self.o.current_mode(), "search")
+        self.o.mode_key("prev_mode")
+        self.assertEqual(self.o.current_mode(), "text")
+        self.o.mode_key("text_mode")                       # Ctrl+T toggles text mode off again
+        self.assertEqual(self.o.current_mode(), "search")
+        QTest.qWait(250)                                   # let the pending capture timer find text mode gone
 
     def test_input_jump_insert_and_fallback(self):
         """Ctrl+I in the search shows only the text fields, again selects the next; in the movement mode it clicks and

@@ -11,7 +11,7 @@ window on the target's screen holds a search panel, and every element of the tar
 
   type a label or a name   narrow the results; labels that no longer match disappear
   Enter                    click the selected element         Ctrl+Enter   right click
-  Alt+Enter                double click                       Shift+Enter  middle click
+  Enter, Enter (twice)     double click                       Shift+Enter  middle click
   (tap Ctrl to hover / twice to focus is off by default: bind tap_hover in Settings → Keys)
   Ctrl+1..9                act on row n                       Ctrl+Shift+1..9  select row n
   ↑ ↓ / Tab / Ctrl+N Ctrl+P  move the selection               PageUp / PageDown  by a page
@@ -27,6 +27,10 @@ window on the target's screen holds a search panel, and every element of the tar
                            Backspace zooms out, Ctrl+Shift+G window/screen, Esc -> pointer movement
   Ctrl+M                   mouse movement: hold H J K L to move the pointer (Shift faster, Alt precise), Enter clicks
   Arrows, PgUp/PgDn (D / U in movement)  (in either mouse mode) scroll under the pointer without leaving the mode; Esc in the grid -> movement
+  Ctrl+T                   text mode: the words on screen (OCR) as a Vim buffer: h j k l w b 0 $ gg G move, v / V select,
+                           y copy, p paste into a text field, P paste here, f jump by label, / search; Space + J K / D U / F B scroll; Esc back
+  Ctrl+Tab / Ctrl+Shift+Tab  next / previous mode (labels -> grid -> pointer movement -> text)
+  Ctrl+Shift+H             clipboard history (Ctrl+J / Ctrl+K or arrows move, Enter pastes)
 All of these (except the Space+H J K L scrolling family and the mouse movement keys) can be rebound in Settings → Keys ([keys] in config.toml);
 the ones above are the defaults.
 Mouse: click a label or a row to activate it, click anywhere else to close, wheel moves the selection.
@@ -47,6 +51,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QWidget
 import vimvibe_clip
 from vimvibe_keys import KeyMap, iv
 from vimvibe_mouse import Grid
+from vimvibe_select import LABEL_ALPHABET, Buffer, Document, estimate_shift, moved_region, nearest_word, scrolled_region
 from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, number, read_config, read_state, write_config, write_state
 
 # the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
@@ -61,6 +66,11 @@ TAP_MS = 350        # a modifier released within this time, with no other key, c
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
                    "Menu", "MenuBar", "PushButtonMenu"}
+# text mode's scroll keys, pressed while Space is held (as in every mode: a held Ctrl would make the app zoom instead of
+# scroll, measured) -> amount: Space+J / K and Space+E / Y a line step, Space+D / U half a page, Space+F / B a page
+# ("line" and "page" sizes come from [text] line_notches / page_notches)
+TEXT_SCROLL = {iv(Qt.Key_J): ("line", 1), iv(Qt.Key_K): ("line", -1), iv(Qt.Key_E): ("line", 1), iv(Qt.Key_Y): ("line", -1),
+               iv(Qt.Key_D): ("half", 1), iv(Qt.Key_U): ("half", -1), iv(Qt.Key_F): ("page", 1), iv(Qt.Key_B): ("page", -1)}
 # Space scroll keys -> (dx, dy). No modifier on purpose: apps treat Ctrl+wheel as zoom (measured: Dolphin does not
 # scroll at all with Ctrl held), Shift+wheel as horizontal, Alt+wheel as "back" in some browsers.
 # X key names the daemon reports for a Ctrl / Alt combination typed over a popup -> Qt keys (single characters are
@@ -153,6 +163,10 @@ class Overlay(QWidget):
         self.panel = QRectF()
         self.tap = {}         # modifier key -> press time (ms), cleared when another key comes in between
         self.ctrl_taps = 0
+        self.dialog_open = False  # a modal dialog of ours (the Chromium restart offer) has the keyboard
+        self.enter_timer = QTimer(self); self.enter_timer.setSingleShot(True)  # waits for a possible second Enter (double click)
+        self.enter_timer.timeout.connect(self.enter_fire)
+        self.enter_pending = None   # what the waiting Enter will do if no second one comes: a callable taking the action name
         self.space_down = False   # Space is held: H J K L scroll instead of typing
         self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
         self.scrolling = False
@@ -161,6 +175,10 @@ class Overlay(QWidget):
         self.arrowing = False     # arrow mode: the overlay is hidden and the daemon turns H J K L into arrow keys
         self.panel_override = None  # the panel toggle key: True/False forces it shown/hidden, None = the default rule
         self.mouse = None         # keyboard mouse: None, "grid" (zooming grid) or "move" (H J K L moves the pointer)
+        self.text = None          # text mode: {"state": "capturing" | "reading" | "ready", "buf": Buffer or None}
+        self.paste_target = False # text mode's p: the next Enter on a text field pastes into it instead of clicking
+        self.text_space = False   # text mode: Space is held, so J K E Y D U F B scroll
+        self.text_ppn = 60.0      # text mode: screen pixels one wheel notch scrolls, re-measured after every scroll
         self.grid = None
         self.grid_scope = "window"
         self.esc_at = 0.0         # time of the last Esc that only armed the "press Esc again to close" step
@@ -226,6 +244,7 @@ class Overlay(QWidget):
         self.load_settings()  # settings apply on the next open, no restart
         self.space_down = self.space_used = self.arrowing = self.scrolling = False  # a fresh open ends any edit mode
         self.leave_mouse()
+        self.text, self.paste_target = None, False
         was_refresh, self.refreshing = self.refreshing, False
         self.meta = json.loads(payload)
         self.panel_override = self.initial_panel_override()
@@ -274,6 +293,8 @@ class Overlay(QWidget):
     def closed(self):
         """Daemon signal: the snapshot was dropped; hide."""
         self.show_labels_timer.stop()
+        self.text, self.paste_target = None, False
+        self.enter_cancel()
         try:
             self.end_scroll(refresh=False)
             self.leave_mouse()
@@ -309,7 +330,11 @@ class Overlay(QWidget):
         yes = box.addButton("Restart it", QMessageBox.AcceptRole)
         box.addButton("Not now", QMessageBox.RejectRole)
         box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        box.exec()
+        self.dialog_open = True  # the dialog must keep the keyboard: no regrab while it is up
+        try:
+            box.exec()
+        finally:
+            self.dialog_open = False
         if box.clickedButton() is not yes:
             return
         res = self.call("RestartWithAccessibility", int(app["pid"]))
@@ -504,10 +529,12 @@ class Overlay(QWidget):
         if mode in ("grid", "move"):
             self.grid_scope = mc.get("scope", "window")
             self.enter_grid() if mode == "grid" else self.enter_move()
+        elif mode == "text":
+            self.enter_text()
 
     def sync_field(self):
         """The search field is a real widget over the panel: make its text invisible while the panel is hidden."""
-        color = self.t.panel_text.name() if self.panel_shown() and self.clip is None else "transparent"
+        color = self.t.panel_text.name() if self.panel_shown() and self.clip is None and self.text is None else "transparent"
         self.edit.setStyleSheet(f"background: transparent; color: {color};")
         self.set_placeholder()
 
@@ -583,6 +610,33 @@ class Overlay(QWidget):
         self.place_panel(keep_if_clear=True)
         self.update()
 
+    def enter_tap(self, run):
+        """A plain Enter: with `[behavior] double_tap_ms` > 0 it waits that long for a second Enter. Once more within the
+        time is a double click, like the mouse; otherwise the single click goes out when the time is up. `run(action)`
+        performs the click ("click" or "double") on the target chosen now, so moving the selection while waiting
+        changes nothing. Other click keys (right, middle) never wait. An Enter held down (key repeat) counts once."""
+        wait = int(self.cfg["behavior"].get("double_tap_ms", 250))
+        if wait <= 0:
+            run("click")
+        elif self.enter_pending is not None:  # second Enter in time
+            pending, self.enter_pending = self.enter_pending, None
+            self.enter_timer.stop()
+            pending("double")
+        else:
+            self.enter_pending = run
+            self.enter_timer.start(wait)
+
+    def enter_fire(self):
+        """The wait for a second Enter ran out: do the single click."""
+        pending, self.enter_pending = self.enter_pending, None
+        if pending is not None:
+            pending("click")
+
+    def enter_cancel(self):
+        """Forget a waiting Enter (the overlay is closing or being dismissed)."""
+        self.enter_timer.stop()
+        self.enter_pending = None
+
     def act(self, action="click", row=None, eid=None):
         """Run an action on a result row (default: the selected one) or on an element id (a clicked label)."""
         if eid is None:
@@ -609,6 +663,8 @@ class Overlay(QWidget):
     def dismiss(self):
         """Close without acting (Esc, click outside)."""
         self.show_labels_timer.stop()
+        self.text, self.paste_target = None, False
+        self.enter_cancel()
         self.end_scroll(refresh=False)
         self.leave_mouse()
         self.hide()
@@ -648,6 +704,8 @@ class Overlay(QWidget):
         self.daemon.asyncCall("ScrollEnd")
         if self.windowHandle():
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            # the wheel events activated the app below: take the keyboard back now, so the next Space + J works too
+            QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))
         if refresh:
             # the old labels are wrong once the content has moved: draw nothing until the new ones arrive, then show
             # them all at once (never the stale ones, never a staggered fade-in)
@@ -900,6 +958,8 @@ class Overlay(QWidget):
         c, items, rows = self.clip, self.clip_items(), self.t.rows
         mods = iv(mods)
         action = self.keymap.match(key, mods)
+        if mods & iv(Qt.ControlModifier) and key in (iv(Qt.Key_J), iv(Qt.Key_K)):  # Vim-style: Ctrl+J down, Ctrl+K up
+            action = "next" if key == iv(Qt.Key_J) else "prev"
         if key == iv(Qt.Key_Escape) or action == "clip_history":
             self.clip = None
             self.sync_field()
@@ -953,28 +1013,389 @@ class Overlay(QWidget):
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
 
     def event(self, ev):
-        """While a mouse mode is active, losing the keyboard (a click in the app below activates it) is answered by
-        taking it back, so the mode keeps working without interruption."""
-        if ev.type() == QEvent.WindowDeactivate and self.mouse in ("grid", "move") and self.isVisible():
-            self.stop_move()  # the key releases of held direction keys will go to the app: don't keep drifting
+        """Losing the keyboard while the overlay is on screen (a click from a mouse mode, or the wheel events of a
+        scroll, activate the app below) is answered by taking it back, in every mode: otherwise the overlay stays
+        drawn but the next keys (Space + J...) reach the app. Not while scrolling or in arrow mode, where the app is
+        meant to have the input, and not while a dialog of ours is open."""
+        if ev.type() == QEvent.WindowDeactivate and self.keeps_keyboard():
+            if self.mouse in ("grid", "move"):
+                self.stop_move()  # the key releases of held direction keys will go to the app: don't keep drifting
             QTimer.singleShot(80, self.regrab_keyboard)
         return super().event(ev)
 
-    def regrab_keyboard(self):
-        """Take the keyboard back after the app below was clicked (the click activated that window) by asking to be
-        activated again, with no hiding or flicker. Only while a mouse mode is still active and the overlay isn't."""
+    def keeps_keyboard(self):
+        """True when the overlay is supposed to hold the keyboard right now."""
+        return (self.isVisible() and not self.passive and not self.scrolling and not self.arrowing
+                and not self.dialog_open)
+
+    def regrab_keyboard(self, force=False):
+        """Take the keyboard back by asking to be activated again, with no hiding or flicker. Rate-limited to once a
+        second (never loop if the compositor won't give it back) unless `force` (the end of a scroll, which is known to
+        have moved the focus)."""
         now = time.monotonic()
-        if now - self.last_regrab < 1.0:  # never loop if the compositor won't give the keyboard back
+        if not force and now - self.last_regrab < 1.0:
             return
-        if self.mouse in ("grid", "move") and self.isVisible() and not self.isActiveWindow():
+        if self.keeps_keyboard() and not self.isActiveWindow():
             self.last_regrab = now
             self.windowHandle().requestActivate()  # asking again is enough: the overlay never leaves the screen
             self.activateWindow()
             self.edit.setFocus()
 
+    # --- modes: switching, and text mode (the screen as a Vim buffer) ------------------------------------------
+    def current_mode(self):
+        """The mode on screen now: "search" (labels), "grid", "move" or "text"."""
+        if self.text is not None:
+            return "text"
+        return self.mouse if self.mouse in ("grid", "move") else "search"
+
+    def mode_key(self, action):
+        """The mode keys: text_mode toggles text mode, next_mode / prev_mode go round labels → grid → pointer
+        movement → text (modes that are off or unavailable here are skipped)."""
+        if action == "text_mode":
+            self.switch_mode("search" if self.text is not None else "text")
+            return
+        modes = ["search"] + (["grid", "move"] if self.mouse_enabled() else []) + (["text"] if not self.passive else [])
+        cur = self.current_mode()
+        i = modes.index(cur) if cur in modes else 0
+        self.switch_mode(modes[(i + (1 if action == "next_mode" else -1)) % len(modes)])
+
+    def switch_mode(self, mode):
+        """Leave the current mode and enter `mode`; a short message names it (not for text mode, whose screenshot
+        must show nothing of vimvibe)."""
+        if self.text is not None:
+            self.leave_text()
+        if mode == "search":
+            self.leave_mouse(remember=True)
+        elif mode == "grid":
+            if self.mouse == "move":
+                self.leave_mouse()
+            self.enter_grid()
+        elif mode == "move":
+            self.enter_move()  # from the grid it starts at the grid's centre
+        elif mode == "text":
+            self.enter_text()
+            return
+        self.show_flash({"search": "Labels", "grid": "Mouse grid", "move": "Pointer movement"}[mode])
+
+    def text_cfg(self):
+        """The [text] settings merged over the defaults."""
+        return {**DEFAULTS["text"], **self.cfg.get("text", {})}
+
+    def enter_text(self):
+        """Text mode, step 1: draw nothing (the search field moves off screen but keeps the keyboard), then ask the
+        daemon for a screenshot once the empty frame is on screen. The words arrive later (`text_words`)."""
+        if self.passive or self.origin is None or self.text is not None:
+            return
+        self.leave_mouse()
+        self.clip = None
+        self.text = {"state": "capturing", "buf": None}
+        self.text_space = False
+        self.flash = ""; self.flash_timer.stop()
+        self.edit.setGeometry(-1000, -1000, 10, 10)
+        self.sync_field()
+        write_state(mode="text")
+        self.update()
+        QTimer.singleShot(150, self.text_capture_now)  # a frame or two: the screenshot must not show vimvibe
+
+    def text_capture_now(self):
+        """Text mode, step 2: the screen shows no vimvibe now; take the screenshot (the daemon returns as soon as it
+        is taken and reads the words in the background)."""
+        if self.text is None or self.text["state"] != "capturing":
+            return
+        res = self.call("TextCapture")
+        if self.text is None:
+            return
+        if not res or not res.get("ok"):
+            self.leave_text()
+            self.show_flash((res or {}).get("error", "the daemon did not answer"))
+            return
+        self.text["state"] = "reading"
+        self.update()
+
+    @Slot(str)
+    def text_words(self, payload):
+        """Daemon signal: the words of the screenshot. Build the buffer in this window's coordinates, with the caret
+        on the first word inside the window vimvibe was opened over."""
+        if self.text is None or self.text["state"] != "reading":
+            return  # text mode was left while the screen was being read
+        data = json.loads(payload)
+        if not data.get("ok"):
+            self.leave_text()
+            self.show_flash("Text mode: " + data.get("error", "reading the screen failed"))
+            return
+        ox, oy = self.origin
+        words = [dict(w, x=w["x"] - ox, y=w["y"] - oy) for w in data.get("words", [])]
+        prev, replay = self.text.get("prev"), self.text.get("replay")
+        if self.windowHandle():
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))  # the scroll may have activated the app
+        if prev is None:  # the first reading: a new document, caret on the first word of the target window
+            buf = self.text_buffer(Document(words))
+            o = self.meta.get("origin")
+            if o and o[2] > 0 and len(buf):
+                win = QRectF(o[0] - ox, o[1] - oy, o[2], o[3])
+                inside = [i for i, w in enumerate(buf.layout.words) if win.contains(QPointF(w["x"] + w["w"] / 2, w["y"] + w["h"] / 2))]
+                if inside:
+                    buf.sel.restart(inside[0])
+            self.text = {"state": "ready", "buf": buf}
+            if not len(buf):
+                self.show_flash("No text was found on the screen")
+            self.update()
+            return
+        # after a scroll: find how far the scrolled part moved, add what came into view to the document, and put the
+        # caret / selection back on their words (Phase A: a selection may now reach far off screen)
+        doc = prev.doc
+        seen = [w for i, w in enumerate(prev.layout.words) if prev.visible(i)]
+        shift = estimate_shift(seen, words) if words else None
+        region = scrolled_region(seen, words, shift) if shift is not None else None
+        moved = moved_region(seen, words, shift) if shift is not None else None
+        if moved is not None:  # the height of what scrolled: it limits the next steps (see text_scroll)
+            doc.view_h = max(doc.view_h, moved[3] - moved[1])
+        notches = self.text.get("notches") or 0
+        if shift is not None and region is not None and notches:
+            self.text_ppn = max(5.0, abs(shift[1]) / abs(notches))  # measured pixels per wheel notch in this app
+        targets = None
+        if len(prev):
+            targets = (doc.target(prev.layout.words[prev.sel.anchor]), doc.target(prev.layout.words[prev.sel.cursor]))
+        if doc.update(words, shift, region):
+            buf = self.text_buffer(doc)
+            if targets:
+                buf.restore(doc, *targets, prev.visual, prev.sel.mode)
+            self.text = {"state": "ready", "buf": buf, "revealing": self.text.get("revealing", 0)}
+            if replay:
+                res = buf.key(replay)
+                if res and res[0] == "scroll":  # still no line further: the page ends here
+                    self.show_flash("The end of the page" if res[1] > 0 else "The top of the page")
+                else:
+                    self.text_result(res)
+            self.text_reveal()
+            self.update()
+            return
+        # the scroll went past everything that was on screen: the document can't continue, so a new one starts and,
+        # like Vim's Ctrl+D, the caret keeps its place on the screen
+        buf = self.text_buffer(Document(words))
+        if len(prev) and len(buf):
+            w = prev.layout.words[prev.sel.cursor]
+            buf.sel.restart(nearest_word(buf.layout, w["x"] + w["w"] / 2, min(max(w["y"], 0), self.height()) + w["h"] / 2))
+        if prev.visual or len(doc.doc):
+            self.show_flash("Lost track of the page (it moved too far or changed): the text before this point was dropped")
+        self.text = {"state": "ready", "buf": buf}
+        self.update()
+
+    def text_buffer(self, doc):
+        """A text-mode buffer over a document's current view, with this screen's size and the [text] settings."""
+        tc = self.text_cfg()
+        buf = Buffer(doc.view(), alphabet=str(tc.get("labels") or LABEL_ALPHABET), join_lines=tc.get("join_lines", "newline"),
+                     screen=(self.width(), self.height()))
+        buf.doc = doc
+        return buf
+
+    def text_reveal(self):
+        """Keep the caret on screen, like Vim: when a motion (k, gg, a search hit...) put it on document text that has
+        scrolled away, scroll the app towards it in steps that always overlap (so the next reading can be placed), and
+        check again after each reading. Gives up after 60 steps."""
+        buf = self.text.get("buf") if self.text else None
+        if buf is None or not len(buf):
+            return False
+        w = buf.layout.words[buf.sel.cursor]
+        if w["y"] >= 0 and w["y"] + w["h"] <= self.height():  # fully on screen: nothing to do
+            self.text.pop("revealing", None)
+            return False
+        steps = self.text.get("revealing", 0)
+        if steps >= 60:
+            self.text.pop("revealing", None)
+            self.show_flash("Could not scroll the caret back into view")
+            return False
+        px = (w["y"] + w["h"] / 2) - self.height() / 2  # positive: the caret is below the screen's middle
+        self.text["revealing"] = steps + 1
+        self.text_scroll(px / self.text_ppn, keep_reveal=True)
+        return True
+
+    def text_notches(self, size):
+        """Wheel notches for a text-mode scroll of `size` "line", "half" or "page" ([text] line_notches, page_notches)."""
+        tc = self.text_cfg()
+        page = max(1.0, float(tc.get("page_notches", 8)))
+        return {"line": max(0.2, float(tc.get("line_notches", 1))), "half": page / 2, "page": page}[size]
+
+    def text_scroll(self, notches, replay=None, keep_reveal=False):
+        """Scroll the app under the caret by `notches` (positive = down), then read the screen again. Nothing is
+        drawn meanwhile (the next screenshot must not show vimvibe) and the wheel events must reach the app, so the
+        overlay lets input through. The old buffer is kept to carry the caret / selection over (`text_words`), and
+        `replay` (j / k at the edge of the screen) is typed again once the new words are in.
+
+        The first step is one line step (it measures the scrolled area and pixels per notch); after that a step never
+        scrolls further than half the scrolled area, so the next reading overlaps the last one enough to be placed in
+        the document (Phase A: measured, a list scrolled 12 of its 13 rows lost track). Bigger jumps are several
+        steps (`text_reveal`). The pointer goes to the caret, or into the scrolled area when the caret is off screen."""
+        buf = self.text.get("buf") if self.text else None
+        if buf is None or not len(buf):
+            return
+        doc = getattr(buf, "doc", None)
+        region = doc.region if doc is not None else None
+        if region is None or not doc.view_h:  # nothing measured yet: a small first step finds the area and its speed
+            cap = self.text_notches("line")
+        else:  # at most half the scrolled area, so the next reading overlaps enough to be placed
+            cap = max(0.2, 0.5 * doc.view_h / self.text_ppn)
+        notches = max(-cap, min(cap, notches))
+        w = buf.layout.words[buf.sel.cursor]
+        cx, cy = w["x"] + w["w"] / 2, w["y"] + w["h"] / 2
+        if not buf.visible(buf.sel.cursor):  # scroll where the document is, not at an off-screen point
+            cx, cy = ((region[0] + region[2]) / 2, (region[1] + region[3]) / 2) if region else (self.width() / 2, self.height() / 2)
+        x, y = cx + self.origin[0], cy + self.origin[1]
+        state = {"state": "capturing", "buf": None, "prev": buf, "replay": replay, "notches": notches}
+        if keep_reveal:
+            state["revealing"] = self.text.get("revealing", 0)
+        self.text = state
+        self.flash = ""; self.flash_timer.stop()
+        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.update()
+        res = self.call("PointerScroll", 0, round(notches * 10), x, y, False)
+        if not res or not res.get("ok"):
+            self.text = {"state": "ready", "buf": buf}
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.show_flash("Can't scroll: " + (res or {}).get("error", "the daemon did not answer"))
+            return
+        QTimer.singleShot(120, self.text_capture_now)  # the daemon waits for the glide to end before the screenshot
+
+    def leave_text(self):
+        """Back to the labels: the search field returns to the panel."""
+        if self.text is None:
+            return
+        if self.windowHandle():
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)  # a scroll may have let input through
+        self.text = None
+        self.place_panel()
+        self.sync_field()
+        self.update()
+
+    def text_event(self, ev):
+        """A key while text mode is on (every key is consumed): the mode keys, the clipboard history and Settings work
+        as everywhere; Space held + J K E Y D U F B scrolls (like Space + J / K in the other modes); everything else
+        goes to the buffer (see vimvibe_select.Buffer for the Vim keys)."""
+        k, mods = iv(ev.key()), iv(ev.modifiers())
+        held_mod = mods & (iv(Qt.ControlModifier) | iv(Qt.AltModifier) | iv(Qt.MetaModifier))
+        searching = self.text.get("buf") is not None and self.text["buf"].search is not None
+        if k == iv(Qt.Key_Space) and not held_mod and not searching:  # Space is a scroll chord here, never typed
+            if not ev.isAutoRepeat():
+                self.text_space = ev.type() == QEvent.KeyPress
+            return True
+        if ev.type() != QEvent.KeyPress:
+            return True
+        if k in (iv(Qt.Key_Control), iv(Qt.Key_Alt), iv(Qt.Key_Shift), iv(Qt.Key_Meta)):
+            return True
+        action = self.keymap.match(ev.key(), ev.modifiers())
+        if action in ("text_mode", "next_mode", "prev_mode"):
+            if not ev.isAutoRepeat():
+                self.mode_key(action)
+            return True
+        if action == "clip_history" and self.clip_enabled():
+            self.open_clip()
+            return True
+        if action == "settings":
+            self.dismiss()
+            if self.on_settings:
+                self.on_settings()
+            return True
+        buf = self.text.get("buf")
+        if buf is None:  # still capturing / reading: only Esc does something (gives up)
+            if k == iv(Qt.Key_Escape):
+                self.leave_text()
+            return True
+        if self.text_space and not held_mod and k in TEXT_SCROLL:
+            size, sign = TEXT_SCROLL[k]
+            self.text_scroll(self.text_notches(size) * sign)
+            return True
+        name = {iv(Qt.Key_Escape): "Escape", iv(Qt.Key_Return): "Return", iv(Qt.Key_Enter): "Return",
+                iv(Qt.Key_Backspace): "BackSpace"}.get(k)
+        if name is None:
+            if mods & (iv(Qt.ControlModifier) | iv(Qt.AltModifier) | iv(Qt.MetaModifier)) or len(ev.text()) != 1:
+                return True
+            name = ev.text()
+        self.text_result(buf.key(name))
+        if self.text is not None and self.text.get("buf") is buf and self.text["state"] == "ready":
+            self.text_reveal()  # the caret may now be on document text that has scrolled away
+        self.update()
+        return True
+
+    def text_result(self, res):
+        """Carry out what the buffer asked for: copy, paste into a field / where the keyboard is, leave, or a message."""
+        if not res:
+            return
+        kind = res[0]
+        if kind == "scroll":  # j / k ran out of lines on screen: scroll the app, read it again, then repeat the key
+            self.text_scroll(self.text_notches("line") * res[1], replay=res[2])
+            return
+        if kind == "copy":
+            if not self.clip_enabled():
+                self.show_flash("The clipboard keys are off (Settings → Mouse → Clipboard)")
+                return
+            vimvibe_clip.set_text(res[1])
+            self.show_flash(f"Copied {len(res[1])} characters: " + vimvibe_clip.one_line(res[1], 40))
+        elif kind == "message":
+            self.show_flash(res[1])
+        elif kind == "leave":
+            self.leave_text()
+        elif kind == "paste_here":
+            self.leave_text()
+            self.send_keys("ctrl+v", "paste")
+        elif kind == "paste_field":
+            self.leave_text()
+            self.jump_input()
+            if self.hits and self.edit.text().strip().lower() == "field":
+                self.paste_target = True
+                self.show_flash("Pick the text field to paste into: Ctrl+I next · Enter paste · Esc cancel")
+            else:
+                self.show_flash("No text field found here: P in text mode pastes where the keyboard is")
+
+    def paint_text(self, p):
+        """Text mode: nothing while the screenshot is taken; a banner while it is read; then the buffer: a faint box
+        around every word, the selection filled in the accent colour (like a text selection), the caret word framed,
+        the `f` labels, and the status line."""
+        state = self.text["state"]
+        if state == "capturing":
+            return
+        if state == "reading":
+            self.banner(p, "Reading the text on screen…  [Esc] cancel", None)
+            return
+        buf, tc = self.text["buf"], self.text_cfg()
+        dim = number(tc.get("dim"), 15, 0, 60)
+        if dim:
+            p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * dim / 100)))
+        accent = QColor(self.t.accent)
+        faint = QColor(accent); faint.setAlpha(80)
+        p.setPen(QPen(faint, 1)); p.setBrush(Qt.NoBrush)
+        H = self.height()
+        for w in buf.layout.words:
+            if -w["h"] < w["y"] < H:  # document words that scrolled away are not drawn
+                p.drawRoundedRect(QRectF(w["x"] - 1, w["y"] - 1, w["w"] + 2, w["h"] + 2), 2, 2)
+        fill = QColor(accent); fill.setAlpha(130 if buf.visual else 90)
+        for x, y, w, h in buf.sel.rects():
+            p.fillRect(QRectF(x - 2, y - 2, w + 4, h + 4), fill)
+        cur = None
+        if len(buf):
+            w = buf.layout.words[buf.sel.cursor]
+            cur = QRectF(w["x"] - 3, w["y"] - 3, w["w"] + 6, w["h"] + 6)
+            p.setPen(QPen(self.t.selected, 2)); p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(cur, 3, 3)
+        if buf.labels is not None:
+            for label, i in buf.labels.items():
+                if label.startswith(buf.typed):
+                    w = buf.layout.words[i]
+                    lw, lh = self.t.label_size(label)
+                    self.t.draw_label(p, QRectF(w["x"], w["y"] - lh / 2, lw, lh), label, len(buf.typed))
+        self.banner(p, buf.status(), cur)
+
     def jump_input(self):
-        """Search: show only the text fields (the query "field"); pressed again, select the next one (Enter focuses it
-        and starts typing; Esc brings vimvibe back). Like Vimium's gi."""
+        """Ctrl+I in every mode (labels, grid, pointer movement): show only the window's text fields (the query "field");
+        pressed again, select the next one (Enter focuses it and starts typing; Esc brings vimvibe back). Like Vimium's
+        gi. From a mouse mode the fields are looked up first: when there are some the mode is left for the field list;
+        when the app exposes none (nothing to label), it falls back to clicking where the pointer is and typing there."""
+        if self.mouse:
+            found = (self.call("Search", "field") or {}).get("hits", [])
+            if not found:
+                self.mouse_insert()
+                return
+            self.leave_mouse()
         if self.edit.text().strip().lower() != "field":
             self.edit.setText("field")
             if not self.hits:
@@ -1106,7 +1527,10 @@ class Overlay(QWidget):
             return self.mouse_scroll(scroll, bool(mods & iv(Qt.ShiftModifier)) or k in (iv(Qt.Key_PageUp), iv(Qt.Key_PageDown)))
         action = self.keymap.match(ev.key(), ev.modifiers(), mouse=True)
         click = {"click": "click", "right_click": "right", "double_click": "double", "middle_click": "middle"}.get(action)
-        if action == "close":
+        if action in ("text_mode", "next_mode", "prev_mode"):
+            if not ev.isAutoRepeat():
+                self.mode_key(action)
+        elif action == "close":
             self.close_pressed()
         elif action == "mouse_grid":
             self.leave_mouse(remember=True) if self.mouse == "grid" else self.enter_grid()
@@ -1118,10 +1542,14 @@ class Overlay(QWidget):
             self.open_clip()
         elif action == "edit_mode":
             self.enter_edit()
-        elif action == "mouse_insert":
-            self.mouse_insert()
+        elif action == "jump_input":
+            self.jump_input()
         elif click:
-            self.mouse_commit(click)
+            if click == "click":
+                if not ev.isAutoRepeat():
+                    self.enter_tap(self.mouse_commit)
+            else:
+                self.mouse_commit(click)
         elif self.mouse == "grid":
             if action == "mouse_back":
                 if self.grid.back():
@@ -1151,6 +1579,8 @@ class Overlay(QWidget):
         t = ev.type()
         if self.clip is not None and t in (QEvent.KeyPress, QEvent.KeyRelease):  # the picker takes every key
             return self.clip_key(ev.key(), ev.modifiers(), ev.text()) if t == QEvent.KeyPress else True
+        if self.text is not None and t in (QEvent.KeyPress, QEvent.KeyRelease):  # text mode takes every key
+            return self.text_event(ev)
         if self.mouse and t in (QEvent.KeyPress, QEvent.KeyRelease):
             return self.mouse_event(ev)
         if t == QEvent.KeyPress:
@@ -1162,6 +1592,10 @@ class Overlay(QWidget):
                 return False
             self.tap = {}  # another key: the modifier was used as a modifier, not tapped
             action = self.keymap.match(k, mods)
+            if action in ("text_mode", "next_mode", "prev_mode"):
+                if not ev.isAutoRepeat():
+                    self.mode_key(action)
+                return True
             if action in ("mouse_grid", "mouse_move"):
                 if not ev.isAutoRepeat():
                     self.enter_grid() if action == "mouse_grid" else self.enter_move()
@@ -1194,8 +1628,18 @@ class Overlay(QWidget):
                     self.on_settings()
                 return True
             click = {"click": "click", "right_click": "right", "double_click": "double", "middle_click": "middle"}.get(action)
+            if click == "click" and self.paste_target and not ev.isAutoRepeat():  # text mode's p: paste into this field
+                self.paste_target = False
+                self.paste_into()
+                return True
             if click:
-                self.act(click); return True
+                if click == "click" and not ev.isAutoRepeat():
+                    if self.hits and 0 <= self.sel < len(self.hits):  # the target is fixed now, not when the wait ends
+                        eid = self.hits[self.sel]["id"]
+                        self.enter_tap(lambda a, eid=eid: self.act(a, eid=eid))
+                elif click != "click":
+                    self.act(click)
+                return True
             if action == "refresh":
                 self.daemon.asyncCall("Refresh"); return True
             if action == "edit_mode":
@@ -1241,6 +1685,15 @@ class Overlay(QWidget):
         """Click on a row or a label activates it (right button: right click); anywhere else closes."""
         p = ev.position()
         right = ev.button() == Qt.RightButton
+        if self.text is not None:  # text mode: a click puts the caret on that word, nothing is dismissed
+            buf = self.text.get("buf")
+            for i, w in enumerate(buf.layout.words if buf else []):
+                if QRectF(w["x"], w["y"], w["w"], w["h"]).adjusted(-2, -2, 2, 2).contains(p):
+                    buf.sel.jump(i)
+                    buf._moved()
+                    self.update()
+                    break
+            return
         if self.mouse == "grid":  # click a cell to zoom into it, right click zooms out
             if (self.grid.back() if right else self.grid.zoom_to((p.x(), p.y()))):
                 self.update()
@@ -1257,7 +1710,11 @@ class Overlay(QWidget):
         self.dismiss()
 
     def wheelEvent(self, ev):
-        """Mouse wheel moves the selection."""
+        """Mouse wheel moves the selection; in text mode it scrolls the app under the caret and reads it again."""
+        if self.text is not None:
+            if self.text.get("buf") is not None:
+                self.text_scroll(self.text_notches("line") * (-1 if ev.angleDelta().y() > 0 else 1))
+            return
         self.move_sel(-1 if ev.angleDelta().y() > 0 else 1)
 
     # --- painting -------------------------------------------------------------
@@ -1279,11 +1736,14 @@ class Overlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         self.paint_content(p)
-        if self.flash:  # a short message ("Press Esc again to close") above everything else
+        if self.flash and not (self.text and self.text["state"] == "capturing"):  # a short message above everything else (never in a screenshot)
             self.banner(p, self.flash, self.panel if self.panel_shown() else None)
 
     def paint_content(self, p):
         """The mode-specific drawing: scroll banner, grid, pointer-movement banner, or labels + panel."""
+        if self.text is not None and self.clip is None:
+            self.paint_text(p)
+            return
         if self.t.dim and not self.scrolling and self.mouse is None:
             p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * self.t.dim / 100)))
         if self.clip is not None:
@@ -1322,7 +1782,7 @@ class Overlay(QWidget):
         p.setPen(QPen(t.accent, 2)); p.drawPath(path)
         p.setFont(t.small_font); p.setPen(t.panel_dim)
         p.drawText(QRectF(r.x() + 14, r.y() + 8, w - 28, 24), Qt.AlignVCenter,
-                   "Clipboard history — " + (c["filter"] + "▏" if c["filter"] else "type to filter") + "   ·   Enter paste · Esc back")
+                   "Clipboard history — " + (c["filter"] + "▏" if c["filter"] else "type to filter") + "   ·   Ctrl+J / Ctrl+K move · Enter paste · Esc back")
         for i, text in enumerate(items[c["top"]:c["top"] + t.rows]):
             row = QRectF(r.x() + 8, r.y() + 36 + i * t.row_h, w - 16, t.row_h)
             chosen = c["top"] + i == c["sel"]
@@ -1528,6 +1988,11 @@ class Router(QObject):
             self._passive.on_settings = self.open_settings
         return self._passive
 
+    @Slot(str)
+    def text_words(self, payload):
+        """Daemon signal: text mode's words; only the normal overlay has text mode."""
+        self.normal.text_words(payload)
+
     def start_edit(self, meta):
         """Edit mode began: show its banner in the passive overlay. False when layer-shell isn't available."""
         p = self.passive()
@@ -1598,16 +2063,40 @@ def desktop_entry_installed():
     return any(os.path.isfile(os.path.join(d, "applications", "vimvibe.desktop")) for d in dirs if d)
 
 
+def transfer_settings(export_path, import_path):
+    """`--export FILE` / `--import FILE`: copy the settings to or from JSON (the launcher's `vimvibe export|import`).
+    Returns the process exit code."""
+    from vimvibe_style import export_settings, import_settings
+    try:
+        if export_path:
+            import shutil, subprocess
+            core = os.environ.get("VIMVIBE_CORE") or shutil.which("vimvibe-core") or ""
+            version = subprocess.run([core, "--version"], capture_output=True, text=True).stdout.strip() if core else ""
+            export_settings(export_path, version)
+            print(f"settings exported to {export_path}")
+        else:
+            import_settings(import_path)
+            print(f"settings imported from {import_path} (launch at login is only changed from the Settings window)")
+        return 0
+    except (OSError, ValueError) as e:
+        print(f"vimvibe: {e}", file=sys.stderr)
+        return 1
+
+
 def main():
     """Entry point: the Settings window with --settings, otherwise the resident overlay connected to the daemon."""
     ap = argparse.ArgumentParser(description="vimvibe overlay (keep running) or, with --settings, its Settings window")
     ap.add_argument("--settings", action="store_true", help="open the Settings window")
+    ap.add_argument("--export", metavar="FILE", help="write every setting to a JSON file and exit")
+    ap.add_argument("--import", dest="import_file", metavar="FILE", help="replace the settings with an exported JSON file and exit")
     ap.add_argument("--accent", help=f"label/highlight colour for this run (default {DEFAULT_ACCENT})")
     ap.add_argument("--trigger", action="store_true", help="ask the daemon to open the overlay once (testing)")
     ap.add_argument("--query", default="", help="with --trigger: type this into the search field (testing)")
     ap.add_argument("--quit-after", type=int, default=0, help="exit after N seconds (testing)")
     ap.add_argument("--snapshot", help="after opening, save an image of this overlay window only (testing)")
     a = ap.parse_args()
+    if a.export or a.import_file:  # settings transfer needs no window
+        sys.exit(transfer_settings(a.export, a.import_file))
     app = QApplication(sys.argv)
     app.setApplicationName("vimvibe")
     if icon_path():
@@ -1633,6 +2122,7 @@ def main():
               bus.connect(SERVICE, PATH, IFACE, "Key", router, "1key(QString)"),
               bus.connect(SERVICE, PATH, IFACE, "EditMode", router, "1edit_mode(bool)"),
               bus.connect(SERVICE, PATH, IFACE, "OpenSettings", router, "1open_settings()"),
+              bus.connect(SERVICE, PATH, IFACE, "TextWords", router, "1text_words(QString)"),
               bus.connect(SERVICE, PATH, IFACE, "Quitting", app, "1quit()")])
     # the overlay is useless without the daemon: exit with it however it stops (quit shortcut, kill, crash)
     watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchForUnregistration)
