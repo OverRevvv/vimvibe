@@ -1005,8 +1005,16 @@ class Overlay(QWidget):
             self.edit.setFocus()
 
     def jump_input(self):
-        """Search: show only the text fields (the query "field"); pressed again, select the next one (Enter focuses it
-        and starts typing; Esc brings vimvibe back). Like Vimium's gi."""
+        """Ctrl+I in every mode (labels, grid, pointer movement): show only the window's text fields (the query "field");
+        pressed again, select the next one (Enter focuses it and starts typing; Esc brings vimvibe back). Like Vimium's
+        gi. From a mouse mode the fields are looked up first: when there are some the mode is left for the field list;
+        when the app exposes none (nothing to label), it falls back to clicking where the pointer is and typing there."""
+        if self.mouse:
+            found = (self.call("Search", "field") or {}).get("hits", [])
+            if not found:
+                self.mouse_insert()
+                return
+            self.leave_mouse()
         if self.edit.text().strip().lower() != "field":
             self.edit.setText("field")
             if not self.hits:
@@ -1150,8 +1158,8 @@ class Overlay(QWidget):
             self.open_clip()
         elif action == "edit_mode":
             self.enter_edit()
-        elif action == "mouse_insert":
-            self.mouse_insert()
+        elif action == "jump_input":
+            self.jump_input()
         elif click:
             if click == "click":
                 if not ev.isAutoRepeat():

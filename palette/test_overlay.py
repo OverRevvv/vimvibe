@@ -197,6 +197,20 @@ class OverlayKeys(unittest.TestCase):
         self.tap(Qt.Key_Return, Qt.ControlModifier); QTest.qWait(150)
         self.assertEqual([c[1][1] for c in self.daemon.named("ActivateWith")], ["right"])
 
+    def test_ctrl_i_works_from_every_mode(self):
+        """Ctrl+I in the grid or the movement mode leaves it for the text-field list when the window has fields
+        (the same list the search shows, Ctrl+I again = next); with none, it clicks here and types."""
+        real = self.o.call
+        self.o.call = lambda m, *a: {"hits": [{"id": 1, "hint": "AA", "element": {"name": "f", "role": "Entry", "enabled": True}}]} if m == "Search" else real(m, *a)
+        for enter in (self.o.enter_grid, self.o.enter_move):
+            enter(); self.daemon.calls.clear()
+            self.key(Qt.Key_I, Qt.ControlModifier, "\t")
+            self.assertIsNone(self.o.mouse); self.assertEqual(self.o.edit.text(), "field")
+            self.assertFalse(self.daemon.named("PointerAct"))
+            self.o.edit.clear()
+        self.o.call = real
+        self.o.hide()   # nothing of this overlay may paint during the next test
+
     def test_input_jump_insert_and_fallback(self):
         """Ctrl+I in the search shows only the text fields, again selects the next; in the movement mode it clicks and
         starts insert mode; an app with nothing to label opens in the grid."""

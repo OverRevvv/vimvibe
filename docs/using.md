@@ -130,8 +130,9 @@ Clicking a cell with the mouse zooms into it; right click zooms out.
 make a diagonal. **Shift** is faster, **Alt** is precise. **Enter** clicks where the pointer is (same modifiers as above),
 **Space** leaves it there. **↑ ↓ ← →**, Page Up / Down, **Space + D / U** or **D / U** scroll what is under the pointer without leaving the mode. Holding **Space** and pressing **H J K L** scrolls ← ↓ ↑ → and the overlay stays (set *Space + H J K L* to "Arrow keys" in Settings to send real arrow keys instead; those hide the overlay while Space is held); a plain Space tap still leaves the pointer. **Esc** goes back to the search, and a second **Esc Esc** closes vimvibe. The page under the pointer shows hover effects as you move.
 
-**Text fields, like Vimium.** In the search, **Ctrl+I** shows only the text fields of the window (the query `field`);
-press it again for the next one, **Enter** focuses it. In the pointer movement, **Ctrl+I** clicks where the pointer is
+**Text fields, like Vimium.** **Ctrl+I** works in every mode (labels, grid, pointer movement): it shows only the text
+fields of the window (the query `field`); press it again for the next one, **Enter** focuses it. From the grid or the
+pointer movement it leaves that mode for the field list; if the app exposes no fields, it clicks where the pointer is
 and lets you type. In both cases vimvibe steps aside so the app gets every key, takes **Esc** system-wide (a KWin
 shortcut) and opens again over the window when you press it. If you go to another window instead, Esc is given back
 within a second. Activating any text field from the search does the same. (Terminals and combo boxes are left out: Esc

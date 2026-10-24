@@ -42,8 +42,7 @@ ACTIONS = [
     # Edit mode (Ctrl+E, Vimium-like: H J K L arrows, V / Y / P select, copy, paste) is switched off while it is reworked:
     # the action is commented out, so no key starts it. The code (palette `enter_edit`, daemon `edit_start`) stays.
     # ("edit_mode", "Edit mode: H J K L arrow keys, U / D Home / End, V select, Y copy, P paste (Esc leaves)", ["Ctrl+E"], "key"),
-    ("jump_input", "Search: show only the text fields; again = the next one (Enter focuses it, Esc returns)", ["Ctrl+I"], "key"),
-    ("mouse_insert", "Mouse movement: click here and type (Esc returns to vimvibe)", ["Ctrl+I"], "key"),
+    ("jump_input", "Text fields, in every mode: show only them; again = the next one (Enter focuses it, Esc returns)", ["Ctrl+I"], "key"),
     ("next", "Select the next result", ["Down", "Tab", "Ctrl+N"], "key"),
     ("prev", "Select the previous result", ["Up", "Shift+Tab", "Ctrl+P"], "key"),
     ("page_down", "Select a page further down", ["PgDown"], "key"),
@@ -225,8 +224,8 @@ def conflicts(cfg_keys):
 
 # Actions that only work in one place can share a key with those of the other place: "Space" hides the panel in the
 # search and leaves the pointer in the mouse modes. Everything else (click, close, ...) works in both.
-MOUSE_ONLY = {"mouse_place", "mouse_back", "mouse_scope", "mouse_insert"}
-SEARCH_ONLY = {"toggle_panel", "next", "prev", "page_down", "page_up", "refresh", "settings", "copy_text", "paste_into", "jump_input"}
+MOUSE_ONLY = {"mouse_place", "mouse_back", "mouse_scope"}
+SEARCH_ONLY = {"toggle_panel", "next", "prev", "page_down", "page_up", "refresh", "settings", "copy_text", "paste_into"}
 
 
 def clash(actions):
