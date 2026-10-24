@@ -153,15 +153,16 @@ class Selection:
             lo, hi = lay.lines[lay.line_of[lo]][0], lay.lines[lay.line_of[hi]][-1]
         return lo, hi
 
-    def text(self, join_lines="newline"):
+    def text(self, join_lines="newline", only=None):
         """The selected text: words of a line joined by a space, lines joined by a newline (or by a space with
-        `join_lines="space"`). Empty for an empty layout."""
+        `join_lines="space"`). `only(word)` can leave words out (a selection inside a scrolled document skips the
+        still parts of the screen that lie between its ends). Empty for an empty layout."""
         if not len(self.layout):
             return ""
         lo, hi = self.range()
         lay, out = self.layout, []
         for line in lay.lines:
-            picked = [lay.words[i]["text"].strip() for i in line if lo <= i <= hi]
+            picked = [lay.words[i]["text"].strip() for i in line if lo <= i <= hi and (only is None or only(lay.words[i]))]
             if picked:
                 out.append(" ".join(picked))
         return ("\n" if join_lines == "newline" else " ").join(out)
@@ -236,6 +237,113 @@ def moved_region(old, new, shift, tolerance=4):
             max(w["x"] + w["w"] for w in boxes), max(w["y"] + w["h"] for w in boxes))
 
 
+def scrolled_region(old, new, shift, tolerance=4):
+    """The screen box (x0, y0, x1, y1) of the area a scroll moved: around the words that moved by `shift`, stretched
+    up and down by the scroll distance plus a line, which is where the newly revealed lines appear. None when nothing
+    moved."""
+    box = moved_region(old, new, shift, tolerance)
+    if box is None:
+        return None
+    line = max((w["h"] for w in new), default=12) * 1.5
+    reach = abs(shift[1]) + line
+    return (box[0] - tolerance, box[1] - reach, box[2] + tolerance, box[3] + reach)
+
+
+class Document:
+    """Phase A of research/12: text mode's memory across scrolls, so a selection can span many screens.
+
+    The part of the screen that scrolls (found at the first scroll, `region`) becomes a document that grows: every
+    word in it gets a document y (`dy`, screen y + `offset`, where `offset` is how far the content has scrolled up
+    since it started). A line already in the document keeps its first reading; only lines that scrolled into view are
+    added. Words outside the region (other windows, toolbars) are taken fresh from each reading (`static`).
+    `view()` gives the words for a Buffer: document words at their screen position now, which may be off screen.
+
+    Line keys from tesseract restart in every reading, so they are namespaced by reading (`r3:1.1.2`)."""
+
+    def __init__(self, words):
+        """Start from the first reading: nothing has scrolled yet, so every word is still screen text."""
+        self.reading = 1
+        self.region = None
+        self.view_h = 0  # height of the scrolled area as measured (the overlay keeps steps within half of it)
+        self.offset = 0
+        self.doc = []
+        self.static = self._tag(words)
+
+    def _tag(self, words):
+        """Copies of a reading's words with their line keys namespaced by this reading."""
+        return [dict(w, line=f"r{self.reading}:{w['line']}") if "line" in w else dict(w) for w in words]
+
+    @staticmethod
+    def _inside(w, region):
+        """Whether word w's centre lies in the region box."""
+        cx, cy = w["x"] + w["w"] / 2, w["y"] + w["h"] / 2
+        return region[0] <= cx <= region[2] and region[1] <= cy <= region[3]
+
+    def __len__(self):
+        """Words known: on screen now plus the scrolled document."""
+        return len(self.static) + len(self.doc)
+
+    def view(self):
+        """Words for a Buffer: the still screen words, then the document words where they are on screen now."""
+        return [dict(w, doc=False) for w in self.static] + [dict(w, y=w["dy"] - self.offset, doc=True) for w in self.doc]
+
+    def target(self, w):
+        """Remember where word `w` (from the current view) is, to find it again after the next update."""
+        cx, cy = w["x"] + w["w"] / 2, w["y"] + w["h"] / 2
+        if w.get("doc"):
+            return ("doc", cx, w["dy"] + w["h"] / 2)
+        return ("screen", cx, cy, self.offset)
+
+    def resolve(self, target, layout):
+        """The index in `layout` (built from `view()`) of the word a `target` stands for: a document word by its
+        document position, a screen word by its screen position (a screen word that has become part of the scrolled
+        region counts as a document word at the offset it was seen with)."""
+        if target[0] == "screen" and self.region is not None and self._inside({"x": target[1], "y": target[2], "w": 0, "h": 0}, self.region):
+            target = ("doc", target[1], target[2] + target[3])
+        pool = [i for i, w in enumerate(layout.words) if bool(w.get("doc")) == (target[0] == "doc")] or range(len(layout))
+
+        def dist(i):
+            """Distance from the target to word i's centre (document coordinates for document words)."""
+            w = layout.words[i]
+            y = (w["dy"] if target[0] == "doc" and "dy" in w else w["y"]) + w["h"] / 2
+            return (w["x"] + w["w"] / 2 - target[1]) ** 2 + (y - target[2]) ** 2
+
+        return min(pool, key=dist)
+
+    def update(self, new, shift, region):
+        """Merge the reading taken after a scroll. `shift` (from `estimate_shift` against the previous view's
+        on-screen words) and `region` (from `scrolled_region`) say how far and where the content moved. Returns False
+        when the shift is unknown: the scroll went past everything that was on screen, so the new reading can't be
+        placed in the document (the caller starts a new one)."""
+        if shift is None:
+            return False
+        self.reading += 1
+        new = self._tag(new)
+        if region is not None:
+            if self.region is None:  # the first scroll: what the scrolled area showed before starts the document
+                self.doc = [dict(w, dy=w["y"]) for w in self.static if self._inside(w, region)]
+            self.region = region
+            self.offset -= shift[1]
+        if self.region is None:  # nothing has scrolled yet: still all screen text
+            self.static = new
+            return True
+        self.static = [w for w in new if not self._inside(w, self.region)]
+        buckets = {}
+        for e in self.doc:
+            buckets.setdefault(int(e["dy"] // 16), []).append(e)
+        for w in new:
+            if not self._inside(w, self.region):
+                continue
+            d = w["y"] + self.offset
+            near = [e for k in (int(d // 16) - 1, int(d // 16), int(d // 16) + 1) for e in buckets.get(k, ())]
+            if any(abs(e["x"] - w["x"]) <= 6 and abs(e["dy"] - d) <= max(4, w["h"] / 2) for e in near):
+                continue  # already known: the first reading is kept
+            e = dict(w, dy=d)
+            self.doc.append(e)
+            buckets.setdefault(int(d // 16), []).append(e)
+        return True
+
+
 def nearest_word(layout, x, y, region=None):
     """Index of the word whose centre is nearest to the point (x, y), among the words inside `region` (x0, y0, x1,
     y1; all words when None or when none is inside); None for an empty layout."""
@@ -288,9 +396,12 @@ class Buffer:
     ("scroll", direction, key) when j / k hit the edge of the screen: the overlay scrolls the app, reads the screen
     again and replays the key (Space + J K E Y D U F B scroll in the overlay itself)."""
 
-    def __init__(self, words, alphabet=LABEL_ALPHABET, join_lines="newline"):
-        """Build the buffer over `words` (see Layout) with the caret on the first word."""
+    def __init__(self, words, alphabet=LABEL_ALPHABET, join_lines="newline", screen=None):
+        """Build the buffer over `words` (see Layout) with the caret on the first word. `screen` (w, h) is the visible
+        area: words of a scrolled document can lie outside it (they are still selectable and copied, but get no `f`
+        label)."""
         self.layout = Layout(words)
+        self.screen = screen
         self.sel = Selection(self.layout)
         self.alphabet, self.join_lines = alphabet, join_lines
         self.visual = None        # None, "word" or "line"
@@ -310,11 +421,22 @@ class Buffer:
         if self.visual is None:
             self.sel.restart(self.sel.cursor)
 
+    def visible(self, i):
+        """Whether word i is on screen now (always, without a known screen size)."""
+        if self.screen is None:
+            return True
+        w = self.layout.words[i]
+        return w["y"] + w["h"] > 0 and w["y"] < self.screen[1]
+
     def _copy(self, lo, hi):
-        """The text of words lo..hi (inclusive) as a copy action, keeping the current selection untouched."""
+        """The text of words lo..hi (inclusive) as a copy action, keeping the current selection untouched. When both
+        ends are in the scrolled document, only document words are copied: the still parts of the screen (a toolbar,
+        another window) that sort between them in reading order are not part of the text."""
         keep = (self.sel.anchor, self.sel.cursor, self.sel.mode)
+        words = self.layout.words
+        only = (lambda w: w.get("doc")) if words[lo].get("doc") and words[hi].get("doc") else None
         self.sel.anchor, self.sel.cursor, self.sel.mode = lo, hi, "word"
-        text = self.sel.text(self.join_lines)
+        text = self.sel.text(self.join_lines, only)
         self.sel.anchor, self.sel.cursor, self.sel.mode = keep
         return ("copy", text) if text else ("message", "Nothing to copy")
 
@@ -403,7 +525,8 @@ class Buffer:
         if key in ("p", "P"):
             return ("paste_field",) if key == "p" else ("paste_here",)
         if key in ("f", "s"):
-            self.labels = dict(zip(word_labels(len(self.layout), self.alphabet), range(len(self.layout))))
+            shown = [i for i in range(len(self.layout)) if self.visible(i)]
+            self.labels = dict(zip(word_labels(len(shown), self.alphabet), shown))
             self.typed = ""
             return None
         if key == "/":
@@ -413,34 +536,15 @@ class Buffer:
             return self._find(self.last_search, 1 if key == "n" else -1)
         return None
 
-    def carry_over(self, old, shift):
-        """After a scroll: put the caret (and, while selecting, the anchor) of the `old` buffer on the same words in
-        this one, moved by `shift` (dx, dy) from `estimate_shift`. Returns False when the selection could not be kept
-        (its start scrolled off screen), so the caller can say so; the caret is always placed."""
-        if not len(self) or not len(old):
-            return True
-        dx, dy = shift
-
-        def moved(i):
-            """Where word i of the old buffer is now (its centre)."""
-            w = old.layout.words[i]
-            return w["x"] + w["w"] / 2 + dx, w["y"] + w["h"] / 2 + dy
-
-        region = moved_region(old.layout.words, self.layout.words, shift)
-        cx, cy = moved(old.sel.cursor)
-        self.sel.restart(nearest_word(self.layout, cx, cy, region))
-        if not old.visual:
-            return True
-        ax, ay = moved(old.sel.anchor)
-        top = min(w["y"] for w in self.layout.words)
-        bottom = max(w["y"] + w["h"] for w in self.layout.words)
-        if not top - 4 <= ay <= bottom + 4:
-            return False
-        cursor = self.sel.cursor
-        self.sel.restart(nearest_word(self.layout, ax, ay, region))
-        self.sel.jump(cursor)
-        self.visual, self.sel.mode = old.visual, old.sel.mode
-        return True
+    def restore(self, doc, anchor, cursor, visual, mode):
+        """After a scroll: put the caret and, while selecting, the anchor back on the words they were on (`anchor` /
+        `cursor` from `Document.target` before the update), and the selection mode."""
+        if not len(self):
+            return
+        c = doc.resolve(cursor, self.layout)
+        a = doc.resolve(anchor, self.layout) if visual else c
+        self.sel.anchor, self.sel.cursor, self.sel.goal_x = a, c, None
+        self.visual, self.sel.mode = visual, mode if visual else "word"
 
     def visual_copy(self):
         """`y` while selecting: copy the selection and stop selecting (Vim leaves visual mode after a yank)."""
@@ -502,6 +606,10 @@ class Buffer:
         state = {"word": "VISUAL", "line": "VISUAL LINE"}.get(self.visual, "TEXT")
         pending = f"  {self.pending}" if self.pending else ""
         if self.visual:
-            return f"-- {state} --{pending} · [h j k l w b 0 $] extend · [y] copy · [Esc] stop selecting"
+            lo, hi = self.sel.range()
+            res = self._copy(lo, hi)
+            size = len(res[1]) if res[0] == "copy" else 0
+            return (f"-- {state} --{pending} · {size} characters · [h j k l w b 0 $] extend · [Space+J K D U] scroll · "
+                    f"[y] copy · [Esc] stop selecting")
         return (f"-- {state} --{pending} · [h j k l w b 0 $ gg G] move · [v V] select · [y] copy · "
                 f"[p] paste into a field · [P] paste here · [f] jump · [/] search · [Space+J K D U] scroll · [Esc] back")

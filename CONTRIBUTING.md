@@ -117,7 +117,7 @@ What each suite covers:
 | `test_mouse.py` | grid naming, zooming, depth limits, alphabet clean-up |
 | `test_overlay.py` | the real `Overlay` widget, offscreen, with a fake daemon that records every D-Bus call: Esc Esc, Space panel toggle and scroll chords, mouse modes staying open, Enter twice = double click, Ctrl+I from every mode, clipboard picker (Ctrl+J / K), text mode capture → copy → paste into a field, Ctrl+Tab mode cycle, popups |
 | `test_settings.py` | export → import round trip, refusal of foreign or mistyped files, every option survives the Settings window |
-| `test_select.py` | text mode: reading order and lines, column-aware j / k, motions with counts, v / V, yank operators, p / P, f label jump, / search, Esc steps |
+| `test_select.py` | text mode: reading order and lines, column-aware j / k, motions with counts, v / V, yank operators, p / P, f label jump, / search, Esc steps, scroll alignment (repeated words, still text beside a list), the multi-screen document (a 30-line paragraph over 27 scrolls copied once, still text left out) |
 
 Run one test: `(cd palette && python3 -m unittest test_overlay.OverlayKeys.test_enter_double_tap_double_clicks)`.
 

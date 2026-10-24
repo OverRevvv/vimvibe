@@ -205,10 +205,18 @@ edited or moved: you navigate, select, copy and paste.
 | **Ctrl+Shift+H** | the clipboard history |
 | **Esc** | cancel the label jump, search, count or selection; then back to the labels (**Esc Esc** closes vimvibe) |
 
-After a scroll vimvibe works out how far the text moved (from the words both readings share, ignoring repeated
-words and the parts of the screen that did not move), so the caret, and a selection whose start is still on screen,
-stay on the same words. A selection whose start scrolls off screen is dropped for now (copying across several
-screens is planned). Each scroll reads the screen again, which takes about 2 s.
+**Copying more than a screen.** The part of the screen you scroll becomes a growing document: after each scroll
+vimvibe works out how far the text moved (from the words both readings share, ignoring repeated words and the parts
+of the screen that did not move) and adds only the lines that came into view. So you can press **v** on the first
+word, scroll down through as many screens as you like (hold **Space** + **D**, or keep pressing **j**), and **y** copies
+everything from the start to the caret, in order and without repeated lines. The status line shows how many
+characters are selected. Moving the caret back onto text that has scrolled away (**k**, **gg**, a search hit) scrolls
+the app back to it. Things beside the scrolled part (a toolbar, another window) are not copied into the selection.
+
+Each scroll reads the screen again (about 2 s). The first scroll is one small step (vimvibe measures how far the
+app moves per wheel step); after that a step never moves more than half the scrolled area, so each reading overlaps
+the last one. If vimvibe still loses track (the page reloaded, or jumped), it says so and starts again from what is on
+screen.
 
 Copied lines keep their line breaks (or are joined with spaces: Settings → Mouse → Text mode). The text comes from OCR,
 so a misread letter is possible, and text that is not on screen (scrolled away, behind another window) is not in the

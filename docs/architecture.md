@@ -203,6 +203,16 @@ The screen as a read-only Vim buffer (`vimvibe_select.py` for the logic, `text_*
    back on their words inside the moved area (`moved_region`), and j / k are replayed. With no overlap the caret keeps
    its screen position, like Vim's Ctrl+D.
 
+7. **Long text (Phase A, `Document`).** The scrolled area (found at the first scroll from `scrolled_region`) becomes
+   a document: each word gets a document y (`dy` = screen y + `offset`, the distance scrolled), only words at new
+   document positions are added (a line keeps its first reading), and everything outside the area is taken fresh from
+   each reading. Buffers are built from `Document.view()`, where document words may lie off screen; the caret and the
+   anchor are remembered as document positions (`target` / `resolve`), so a selection can span any number of screens,
+   and a copy whose ends are both in the document leaves out the still text between them. Steps are capped (the first
+   is one line step to measure pixels per notch and the area's height; then at most half that height) so readings
+   overlap; `text_reveal` scrolls back to a caret moved onto text that has scrolled away. If a reading can't be placed
+   (no shift), a new document starts and the user is told.
+
 Nothing is edited: the buffer is a picture of the screen, so it is never out of sync with an app. Accessible apps
 could give exact text instead of OCR (planned: research/12, milestone 3).
 

@@ -261,7 +261,7 @@ class OverlayKeys(unittest.TestCase):
         self.key(Qt.Key_D, text="d")
         self.key(Qt.Key_Space, text=" ", release=True)
         scroll = self.daemon.named("PointerScroll")[0][1]
-        self.assertEqual(scroll[:2], (0, 40)); self.assertEqual(self.o.text["state"], "capturing")
+        self.assertEqual(scroll[:2], (0, 10)); self.assertEqual(self.o.text["state"], "capturing")   # first step: 1 notch (calibration)
         QTest.qWait(250); self.assertTrue(self.daemon.named("TextCapture"))
         moved = [dict(w, y=w["y"] - 20) for w in words[1:]] + [{"text": "echo", "x": 10, "y": 70, "w": 40, "h": 12, "line": "1.1.90"}]
         self.o.text_words(P.json.dumps({"ok": True, "words": moved}))

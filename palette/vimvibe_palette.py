@@ -51,7 +51,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QWidget
 import vimvibe_clip
 from vimvibe_keys import KeyMap, iv
 from vimvibe_mouse import Grid
-from vimvibe_select import LABEL_ALPHABET, Buffer, estimate_shift, nearest_word
+from vimvibe_select import LABEL_ALPHABET, Buffer, Document, estimate_shift, moved_region, nearest_word, scrolled_region
 from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, number, read_config, read_state, write_config, write_state
 
 # the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
@@ -178,6 +178,7 @@ class Overlay(QWidget):
         self.text = None          # text mode: {"state": "capturing" | "reading" | "ready", "buf": Buffer or None}
         self.paste_target = False # text mode's p: the next Enter on a text field pastes into it instead of clicking
         self.text_space = False   # text mode: Space is held, so J K E Y D U F B scroll
+        self.text_ppn = 60.0      # text mode: screen pixels one wheel notch scrolls, re-measured after every scroll
         self.grid = None
         self.grid_scope = "window"
         self.esc_at = 0.0         # time of the last Esc that only armed the "press Esc again to close" step
@@ -1124,41 +1125,91 @@ class Overlay(QWidget):
             return
         ox, oy = self.origin
         words = [dict(w, x=w["x"] - ox, y=w["y"] - oy) for w in data.get("words", [])]
-        tc = self.text_cfg()
-        buf = Buffer(words, alphabet=str(tc.get("labels") or LABEL_ALPHABET), join_lines=tc.get("join_lines", "newline"))
         prev, replay = self.text.get("prev"), self.text.get("replay")
         if self.windowHandle():
             self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
             QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))  # the scroll may have activated the app
-        shift = estimate_shift(prev.layout.words, buf.layout.words) if prev is not None and len(buf) else None
-        if shift is not None:  # after a scroll: same words, same caret (and selection, if its start is still on screen)
+        if prev is None:  # the first reading: a new document, caret on the first word of the target window
+            buf = self.text_buffer(Document(words))
+            o = self.meta.get("origin")
+            if o and o[2] > 0 and len(buf):
+                win = QRectF(o[0] - ox, o[1] - oy, o[2], o[3])
+                inside = [i for i, w in enumerate(buf.layout.words) if win.contains(QPointF(w["x"] + w["w"] / 2, w["y"] + w["h"] / 2))]
+                if inside:
+                    buf.sel.restart(inside[0])
             self.text = {"state": "ready", "buf": buf}
-            if not buf.carry_over(prev, shift):
-                self.show_flash("The selection's start scrolled off screen, so it was dropped")
+            if not len(buf):
+                self.show_flash("No text was found on the screen")
+            self.update()
+            return
+        # after a scroll: find how far the scrolled part moved, add what came into view to the document, and put the
+        # caret / selection back on their words (Phase A: a selection may now reach far off screen)
+        doc = prev.doc
+        seen = [w for i, w in enumerate(prev.layout.words) if prev.visible(i)]
+        shift = estimate_shift(seen, words) if words else None
+        region = scrolled_region(seen, words, shift) if shift is not None else None
+        moved = moved_region(seen, words, shift) if shift is not None else None
+        if moved is not None:  # the height of what scrolled: it limits the next steps (see text_scroll)
+            doc.view_h = max(doc.view_h, moved[3] - moved[1])
+        notches = self.text.get("notches") or 0
+        if shift is not None and region is not None and notches:
+            self.text_ppn = max(5.0, abs(shift[1]) / abs(notches))  # measured pixels per wheel notch in this app
+        targets = None
+        if len(prev):
+            targets = (doc.target(prev.layout.words[prev.sel.anchor]), doc.target(prev.layout.words[prev.sel.cursor]))
+        if doc.update(words, shift, region):
+            buf = self.text_buffer(doc)
+            if targets:
+                buf.restore(doc, *targets, prev.visual, prev.sel.mode)
+            self.text = {"state": "ready", "buf": buf, "revealing": self.text.get("revealing", 0)}
             if replay:
                 res = buf.key(replay)
                 if res and res[0] == "scroll":  # still no line further: the page ends here
                     self.show_flash("The end of the page" if res[1] > 0 else "The top of the page")
                 else:
                     self.text_result(res)
+            self.text_reveal()
             self.update()
             return
-        if prev is not None and len(buf) and len(prev):  # scrolled past everything that was on screen: like Vim's
-            w = prev.layout.words[prev.sel.cursor]           # Ctrl+D (Space+D here), the caret keeps its place on the screen
-            buf.sel.restart(nearest_word(buf.layout, w["x"] + w["w"] / 2, w["y"] + w["h"] / 2))
-            self.text = {"state": "ready", "buf": buf}
-            self.update()
-            return
-        o = self.meta.get("origin")
-        if o and o[2] > 0 and len(buf):
-            win = QRectF(o[0] - ox, o[1] - oy, o[2], o[3])
-            inside = [i for i, w in enumerate(buf.layout.words) if win.contains(QPointF(w["x"] + w["w"] / 2, w["y"] + w["h"] / 2))]
-            if inside:
-                buf.sel.restart(inside[0])
+        # the scroll went past everything that was on screen: the document can't continue, so a new one starts and,
+        # like Vim's Ctrl+D, the caret keeps its place on the screen
+        buf = self.text_buffer(Document(words))
+        if len(prev) and len(buf):
+            w = prev.layout.words[prev.sel.cursor]
+            buf.sel.restart(nearest_word(buf.layout, w["x"] + w["w"] / 2, min(max(w["y"], 0), self.height()) + w["h"] / 2))
+        if prev.visual or len(doc.doc):
+            self.show_flash("Lost track of the page (it moved too far or changed): the text before this point was dropped")
         self.text = {"state": "ready", "buf": buf}
-        if not len(buf):
-            self.show_flash("No text was found on the screen")
         self.update()
+
+    def text_buffer(self, doc):
+        """A text-mode buffer over a document's current view, with this screen's size and the [text] settings."""
+        tc = self.text_cfg()
+        buf = Buffer(doc.view(), alphabet=str(tc.get("labels") or LABEL_ALPHABET), join_lines=tc.get("join_lines", "newline"),
+                     screen=(self.width(), self.height()))
+        buf.doc = doc
+        return buf
+
+    def text_reveal(self):
+        """Keep the caret on screen, like Vim: when a motion (k, gg, a search hit...) put it on document text that has
+        scrolled away, scroll the app towards it in steps that always overlap (so the next reading can be placed), and
+        check again after each reading. Gives up after 60 steps."""
+        buf = self.text.get("buf") if self.text else None
+        if buf is None or not len(buf):
+            return False
+        w = buf.layout.words[buf.sel.cursor]
+        if w["y"] >= 0 and w["y"] + w["h"] <= self.height():  # fully on screen: nothing to do
+            self.text.pop("revealing", None)
+            return False
+        steps = self.text.get("revealing", 0)
+        if steps >= 60:
+            self.text.pop("revealing", None)
+            self.show_flash("Could not scroll the caret back into view")
+            return False
+        px = (w["y"] + w["h"] / 2) - self.height() / 2  # positive: the caret is below the screen's middle
+        self.text["revealing"] = steps + 1
+        self.text_scroll(px / self.text_ppn, keep_reveal=True)
+        return True
 
     def text_notches(self, size):
         """Wheel notches for a text-mode scroll of `size` "line", "half" or "page" ([text] line_notches, page_notches)."""
@@ -1166,17 +1217,35 @@ class Overlay(QWidget):
         page = max(1.0, float(tc.get("page_notches", 8)))
         return {"line": max(0.2, float(tc.get("line_notches", 1))), "half": page / 2, "page": page}[size]
 
-    def text_scroll(self, notches, replay=None):
+    def text_scroll(self, notches, replay=None, keep_reveal=False):
         """Scroll the app under the caret by `notches` (positive = down), then read the screen again. Nothing is
         drawn meanwhile (the next screenshot must not show vimvibe) and the wheel events must reach the app, so the
         overlay lets input through. The old buffer is kept to carry the caret / selection over (`text_words`), and
-        `replay` (j / k at the edge of the screen) is typed again once the new words are in."""
+        `replay` (j / k at the edge of the screen) is typed again once the new words are in.
+
+        The first step is one line step (it measures the scrolled area and pixels per notch); after that a step never
+        scrolls further than half the scrolled area, so the next reading overlaps the last one enough to be placed in
+        the document (Phase A: measured, a list scrolled 12 of its 13 rows lost track). Bigger jumps are several
+        steps (`text_reveal`). The pointer goes to the caret, or into the scrolled area when the caret is off screen."""
         buf = self.text.get("buf") if self.text else None
         if buf is None or not len(buf):
             return
+        doc = getattr(buf, "doc", None)
+        region = doc.region if doc is not None else None
+        if region is None or not doc.view_h:  # nothing measured yet: a small first step finds the area and its speed
+            cap = self.text_notches("line")
+        else:  # at most half the scrolled area, so the next reading overlaps enough to be placed
+            cap = max(0.2, 0.5 * doc.view_h / self.text_ppn)
+        notches = max(-cap, min(cap, notches))
         w = buf.layout.words[buf.sel.cursor]
-        x, y = w["x"] + w["w"] / 2 + self.origin[0], w["y"] + w["h"] / 2 + self.origin[1]
-        self.text = {"state": "capturing", "buf": None, "prev": buf, "replay": replay}
+        cx, cy = w["x"] + w["w"] / 2, w["y"] + w["h"] / 2
+        if not buf.visible(buf.sel.cursor):  # scroll where the document is, not at an off-screen point
+            cx, cy = ((region[0] + region[2]) / 2, (region[1] + region[3]) / 2) if region else (self.width() / 2, self.height() / 2)
+        x, y = cx + self.origin[0], cy + self.origin[1]
+        state = {"state": "capturing", "buf": None, "prev": buf, "replay": replay, "notches": notches}
+        if keep_reveal:
+            state["revealing"] = self.text.get("revealing", 0)
+        self.text = state
         self.flash = ""; self.flash_timer.stop()
         self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
         self.update()
@@ -1243,6 +1312,8 @@ class Overlay(QWidget):
                 return True
             name = ev.text()
         self.text_result(buf.key(name))
+        if self.text is not None and self.text.get("buf") is buf and self.text["state"] == "ready":
+            self.text_reveal()  # the caret may now be on document text that has scrolled away
         self.update()
         return True
 
@@ -1293,8 +1364,10 @@ class Overlay(QWidget):
         accent = QColor(self.t.accent)
         faint = QColor(accent); faint.setAlpha(80)
         p.setPen(QPen(faint, 1)); p.setBrush(Qt.NoBrush)
+        H = self.height()
         for w in buf.layout.words:
-            p.drawRoundedRect(QRectF(w["x"] - 1, w["y"] - 1, w["w"] + 2, w["h"] + 2), 2, 2)
+            if -w["h"] < w["y"] < H:  # document words that scrolled away are not drawn
+                p.drawRoundedRect(QRectF(w["x"] - 1, w["y"] - 1, w["w"] + 2, w["h"] + 2), 2, 2)
         fill = QColor(accent); fill.setAlpha(130 if buf.visual else 90)
         for x, y, w, h in buf.sel.rects():
             p.fillRect(QRectF(x - 2, y - 2, w + 4, h + 4), fill)

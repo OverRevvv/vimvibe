@@ -1,7 +1,7 @@
 """Tests for the copy-mode selection model (run: cd palette && python3 -m unittest test_select)."""
 import unittest
 
-from vimvibe_select import Buffer, Layout, Selection, estimate_shift, parse_count, word_labels
+from vimvibe_select import Buffer, Document, Layout, Selection, estimate_shift, parse_count, scrolled_region, word_labels
 
 
 def word(text, x, y, w=None, h=12, line=None):
@@ -218,26 +218,64 @@ class BufferTests(unittest.TestCase):
         keys(self.b, "gg")
         self.assertEqual(self.b.key("k"), ("scroll", -1, "k"))
 
-    def test_shift_and_carry_over_after_a_scroll(self):
-        """After the page scrolled up by 20 px, the shift is found from the words both readings share, and the caret
-        and a selection whose start is still on screen land on the same words."""
-        b = Buffer(PAGE)
+    def scroll(self, b, new, screen=(400, 60)):
+        """Do what the overlay does after a scroll: measure, update the document, rebuild and restore the buffer."""
+        doc = b.doc
+        seen = [w for i, w in enumerate(b.layout.words) if b.visible(i)]
+        shift = estimate_shift(seen, new)
+        targets = (doc.target(b.layout.words[b.sel.anchor]), doc.target(b.layout.words[b.sel.cursor]))
+        self.assertTrue(doc.update(new, shift, scrolled_region(seen, new, shift)))
+        nb = Buffer(doc.view(), screen=screen); nb.doc = doc
+        nb.restore(doc, *targets, b.visual, b.sel.mode)
+        return nb
+
+    def start(self, words, screen=(400, 60)):
+        """A buffer over a new document, as text mode starts."""
+        doc = Document(words)
+        b = Buffer(doc.view(), screen=screen); b.doc = doc
+        return b
+
+    def test_caret_and_selection_survive_a_scroll(self):
+        """After the page scrolled up by 20 px the caret and the selection stay on their words."""
+        b = self.start(PAGE)
         keys(b, "jv$")                                    # selecting "second line here", caret on "here"
         scrolled = [dict(w, y=w["y"] - 20) for w in PAGE if w["y"] - 20 >= 0] + [word("fourth", 0, 50), word("line", 60, 50)]
         self.assertEqual(estimate_shift(b.layout.words, scrolled), (0, -20))
-        nb = Buffer(scrolled)
-        self.assertTrue(nb.carry_over(b, (0, -20)))
+        nb = self.scroll(b, scrolled)
         self.assertEqual(nb.sel.text(), "second line here")
         self.assertEqual(nb.visual, "word")
 
-    def test_selection_start_scrolled_away(self):
-        """If the selection's start left the screen, the caret is still carried over but the selection is not."""
-        b = Buffer(PAGE)
-        keys(b, "vG")                                     # from "Hello" to "last"
-        scrolled = [dict(w, y=w["y"] - 40) for w in PAGE if w["y"] - 40 >= 0]
-        nb = Buffer(scrolled)
-        self.assertFalse(nb.carry_over(b, (0, -40)))
-        self.assertEqual(nb.layout.words[nb.sel.cursor]["text"], "last")
+    def test_selection_reaches_text_that_scrolled_away(self):
+        """Phase A: a selection whose start scrolled off screen is kept; y copies it all, without duplicate lines."""
+        b = self.start(PAGE)
+        keys(b, "v")                                      # anchor on "Hello"
+        scrolled = [dict(w, y=w["y"] - 40) for w in PAGE if w["y"] - 40 >= 0] + [word("fourth", 0, 30), word("line", 60, 30)]
+        nb = self.scroll(b, scrolled)
+        keys(nb, "G")
+        self.assertEqual(nb.key("y"), ("copy", "Hello world\nsecond line here\nthird and last\nfourth line"))
+
+    def test_a_paragraph_over_many_screens(self):
+        """A long text read over many scrolls (3 lines visible, 1 new line per scroll) is copied whole, in order, once."""
+        lines = [f"line{n:02d} alpha{n:02d} omega{n:02d}" for n in range(30)]
+        def screen(top):
+            """The three lines visible when the text has scrolled `top` lines up."""
+            return [word(t, 70 * k, 20 * (n - top)) for n in range(top, top + 3) for k, t in enumerate(lines[n].split())]
+        b = self.start(screen(0), screen=(400, 60))
+        keys(b, "v")
+        for top in range(1, 28):
+            b = self.scroll(b, screen(top))
+        keys(b, "G$")
+        self.assertEqual(b.key("y"), ("copy", "\n".join(lines)))
+
+    def test_still_text_between_is_not_copied(self):
+        """A toolbar word beside the scrolled column (not part of the document) is left out of a document selection."""
+        col = lambda top: [word(f"w{n}", 0, 20 * (n - top)) for n in range(top, top + 4)]
+        b = self.start(col(0) + [word("Toolbar", 300, 22)], screen=(400, 80))
+        keys(b, "v")
+        b = self.scroll(b, col(1) + [word("Toolbar", 300, 22)], screen=(400, 80))
+        b = self.scroll(b, col(2) + [word("Toolbar", 300, 22)], screen=(400, 80))
+        b.sel.jump(max(i for i, w in enumerate(b.layout.words) if w["text"] == "w5"))
+        self.assertEqual(b.key("y"), ("copy", "w0\nw1\nw2\nw3\nw4\nw5"))
 
     def test_repeated_words_do_not_fool_the_shift(self):
         """A list whose rows all start with the same word: only the unique words (the numbers) decide the shift."""
@@ -245,16 +283,16 @@ class BufferTests(unittest.TestCase):
         self.assertEqual(estimate_shift(rows(10, 0), rows(12, 0)), (0, -40))   # scrolled two rows
 
     def test_a_scrolled_list_beats_the_still_text_beside_it(self):
-        """Only a list scrolled (by 3 rows), a terminal beside it stayed: the list's movement is the shift, and a caret
-        that scrolled off the list's top lands on the list's top row, not on the terminal."""
+        """Only a list scrolled (by 3 rows), a terminal beside it stayed: the list's movement is the shift, and the
+        caret stays on its row in the document (now above the screen), never on the terminal."""
         term = [word(t, 300, 20 * i) for i, t in enumerate(["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"])]
         rows = lambda first: [word(f"r{first + i}", 0, 20 * i) for i in range(6)]
         old, new = term + rows(10), term + rows(13)
         self.assertEqual(estimate_shift(old, new), (0, -60))
-        b = Buffer(old); keys(b, "j")                    # caret on r11 (left column)
-        nb = Buffer(new)
-        nb.carry_over(b, (0, -60))
-        self.assertEqual(nb.layout.words[nb.sel.cursor]["text"], "r13")   # r11 left the screen: the list's top row
+        b = self.start(old, screen=(400, 120)); keys(b, "j")  # caret on r11 (left column)
+        nb = self.scroll(b, new, screen=(400, 120))
+        self.assertEqual(nb.layout.words[nb.sel.cursor]["text"], "r11")   # still on r11, now in the document above the screen
+   # r11 left the screen: the list's top row
 
     def test_no_shift_without_enough_shared_words(self):
         """Fewer than three agreeing pairs (new content) give no shift."""

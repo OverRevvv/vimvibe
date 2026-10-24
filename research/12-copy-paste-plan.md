@@ -68,6 +68,22 @@ overlay. The app is never touched, so this works the same in every app.
 - **Privacy.** The text stays in memory and the screenshot is deleted, as with OCR today. Only the selection reaches
   the clipboard, and only when the user presses `y`.
 
+## Phase A (done): copying across many screens
+
+Built after the discussion of very long paragraphs (more than ten screens) and continuous OCR. The scrolled area of
+the screen becomes a document that grows with every scroll (`Document` in `vimvibe_select.py`); selections live in
+document positions, so `v`, scrolling through any number of screens, and `y` copies the whole text once, in order.
+Scroll steps are capped so readings always overlap (measured: a 13-row list scrolled 12 rows in one step lost track).
+
+Next phases agreed in that discussion:
+
+- **B — speed:** keep tesseract loaded (libtesseract instead of a process per reading) and read only the strip that
+  scrolled into view (the shift says where it is), from ~2 s to ~0.1–0.3 s per step.
+- **C — continuous OCR while scrolling:** frames from the ScreenCast portal for the target window only (so vimvibe's
+  overlay is never in them; one more consent dialog), scroll distance measured from pixels, OCR of the new strip only.
+- **D — exact text from accessible apps** (milestone 3 below): the whole paragraph from AT-SPI Text without
+  scrolling, where the app offers it; the document above stays the fallback.
+
 ## Milestones
 
 1. ✅ `vimvibe_select.py` with tests, driven by fixed word lists. `Layout` sorts words into reading order and lines
