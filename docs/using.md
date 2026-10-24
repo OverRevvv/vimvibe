@@ -199,9 +199,16 @@ edited or moved: you navigate, select, copy and paste.
 | **P** | paste where the keyboard is now (Ctrl+V in the app) |
 | **f** (or **s**) | a label on every word; type one to put the caret there |
 | **/** text **Enter**, then **n** / **N** | search the screen's words, next / previous match |
+| **Ctrl+E** / **Ctrl+Y**, **Ctrl+D** / **Ctrl+U**, **Ctrl+F** / **Ctrl+B**, the mouse wheel | scroll the app under the caret (a line step, half a page, a page) and read the screen again; the caret stays on its word |
+| **j** / **k** past the bottom / top of the screen | scroll one line step and carry on, like Vim |
 | click a word | put the caret there |
 | **Ctrl+Shift+H** | the clipboard history |
 | **Esc** | cancel the label jump, search, count or selection; then back to the labels (**Esc Esc** closes vimvibe) |
+
+After a scroll vimvibe works out how far the text moved (from the words both readings share, ignoring repeated
+words and the parts of the screen that did not move), so the caret, and a selection whose start is still on screen,
+stay on the same words. A selection whose start scrolls off screen is dropped for now (copying across several
+screens is planned). Each scroll reads the screen again, which takes about 2 s.
 
 Copied lines keep their line breaks (or are joined with spaces: Settings → Mouse → Text mode). The text comes from OCR,
 so a misread letter is possible, and text that is not on screen (scrolled away, behind another window) is not in the

@@ -51,7 +51,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox, QWidget
 import vimvibe_clip
 from vimvibe_keys import KeyMap, iv
 from vimvibe_mouse import Grid
-from vimvibe_select import LABEL_ALPHABET, Buffer
+from vimvibe_select import LABEL_ALPHABET, Buffer, estimate_shift, nearest_word
 from vimvibe_style import DEFAULT_ACCENT, DEFAULTS, PROFILE, Theme, icon_path, number, read_config, read_state, write_config, write_state
 
 # the daemon's bus name carries the profile ("...DaemonDev"); the interface name is the same for every profile
@@ -66,6 +66,10 @@ TAP_MS = 350        # a modifier released within this time, with no other key, c
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
                    "Menu", "MenuBar", "PushButtonMenu"}
+# text mode's Vim scroll keys (with Ctrl) -> pages scrolled: Ctrl+E / Ctrl+Y a line step, Ctrl+D / Ctrl+U half a page,
+# Ctrl+F / Ctrl+B a page ("line" and "page" sizes come from [text] line_notches / page_notches)
+TEXT_SCROLL = {Qt.Key_E: ("line", 1), Qt.Key_Y: ("line", -1), Qt.Key_D: ("half", 1), Qt.Key_U: ("half", -1),
+               Qt.Key_F: ("page", 1), Qt.Key_B: ("page", -1)}
 # Space scroll keys -> (dx, dy). No modifier on purpose: apps treat Ctrl+wheel as zoom (measured: Dolphin does not
 # scroll at all with Ctrl held), Shift+wheel as horizontal, Alt+wheel as "back" in some browsers.
 # X key names the daemon reports for a Ctrl / Alt combination typed over a popup -> Qt keys (single characters are
@@ -1119,6 +1123,29 @@ class Overlay(QWidget):
         words = [dict(w, x=w["x"] - ox, y=w["y"] - oy) for w in data.get("words", [])]
         tc = self.text_cfg()
         buf = Buffer(words, alphabet=str(tc.get("labels") or LABEL_ALPHABET), join_lines=tc.get("join_lines", "newline"))
+        prev, replay = self.text.get("prev"), self.text.get("replay")
+        if self.windowHandle():
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))  # the scroll may have activated the app
+        shift = estimate_shift(prev.layout.words, buf.layout.words) if prev is not None and len(buf) else None
+        if shift is not None:  # after a scroll: same words, same caret (and selection, if its start is still on screen)
+            self.text = {"state": "ready", "buf": buf}
+            if not buf.carry_over(prev, shift):
+                self.show_flash("The selection's start scrolled off screen, so it was dropped")
+            if replay:
+                res = buf.key(replay)
+                if res and res[0] == "scroll":  # still no line further: the page ends here
+                    self.show_flash("The end of the page" if res[1] > 0 else "The top of the page")
+                else:
+                    self.text_result(res)
+            self.update()
+            return
+        if prev is not None and len(buf) and len(prev):  # scrolled past everything that was on screen: like Vim's
+            w = prev.layout.words[prev.sel.cursor]           # Ctrl+D, the caret keeps its place on the screen
+            buf.sel.restart(nearest_word(buf.layout, w["x"] + w["w"] / 2, w["y"] + w["h"] / 2))
+            self.text = {"state": "ready", "buf": buf}
+            self.update()
+            return
         o = self.meta.get("origin")
         if o and o[2] > 0 and len(buf):
             win = QRectF(o[0] - ox, o[1] - oy, o[2], o[3])
@@ -1130,10 +1157,40 @@ class Overlay(QWidget):
             self.show_flash("No text was found on the screen")
         self.update()
 
+    def text_notches(self, size):
+        """Wheel notches for a text-mode scroll of `size` "line", "half" or "page" ([text] line_notches, page_notches)."""
+        tc = self.text_cfg()
+        page = max(1.0, float(tc.get("page_notches", 8)))
+        return {"line": max(0.2, float(tc.get("line_notches", 1))), "half": page / 2, "page": page}[size]
+
+    def text_scroll(self, notches, replay=None):
+        """Scroll the app under the caret by `notches` (positive = down), then read the screen again. Nothing is
+        drawn meanwhile (the next screenshot must not show vimvibe) and the wheel events must reach the app, so the
+        overlay lets input through. The old buffer is kept to carry the caret / selection over (`text_words`), and
+        `replay` (j / k at the edge of the screen) is typed again once the new words are in."""
+        buf = self.text.get("buf") if self.text else None
+        if buf is None or not len(buf):
+            return
+        w = buf.layout.words[buf.sel.cursor]
+        x, y = w["x"] + w["w"] / 2 + self.origin[0], w["y"] + w["h"] / 2 + self.origin[1]
+        self.text = {"state": "capturing", "buf": None, "prev": buf, "replay": replay}
+        self.flash = ""; self.flash_timer.stop()
+        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.update()
+        res = self.call("PointerScroll", 0, round(notches * 10), x, y, False)
+        if not res or not res.get("ok"):
+            self.text = {"state": "ready", "buf": buf}
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.show_flash("Can't scroll: " + (res or {}).get("error", "the daemon did not answer"))
+            return
+        QTimer.singleShot(120, self.text_capture_now)  # the daemon waits for the glide to end before the screenshot
+
     def leave_text(self):
         """Back to the labels: the search field returns to the panel."""
         if self.text is None:
             return
+        if self.windowHandle():
+            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)  # a scroll may have let input through
         self.text = None
         self.place_panel()
         self.sync_field()
@@ -1165,6 +1222,11 @@ class Overlay(QWidget):
             if k == iv(Qt.Key_Escape):
                 self.leave_text()
             return True
+        if mods & iv(Qt.ControlModifier) and not mods & (iv(Qt.AltModifier) | iv(Qt.ShiftModifier)):
+            scroll = {iv(key): v for key, v in TEXT_SCROLL.items()}.get(k)
+            if scroll:
+                self.text_scroll(self.text_notches(scroll[0]) * scroll[1])
+                return True
         name = {iv(Qt.Key_Escape): "Escape", iv(Qt.Key_Return): "Return", iv(Qt.Key_Enter): "Return",
                 iv(Qt.Key_Backspace): "BackSpace"}.get(k)
         if name is None:
@@ -1180,6 +1242,9 @@ class Overlay(QWidget):
         if not res:
             return
         kind = res[0]
+        if kind == "scroll":  # j / k ran out of lines on screen: scroll the app, read it again, then repeat the key
+            self.text_scroll(self.text_notches("line") * res[1], replay=res[2])
+            return
         if kind == "copy":
             if not self.clip_enabled():
                 self.show_flash("The clipboard keys are off (Settings → Mouse → Clipboard)")
@@ -1563,8 +1628,10 @@ class Overlay(QWidget):
         self.dismiss()
 
     def wheelEvent(self, ev):
-        """Mouse wheel moves the selection (nothing in text mode: the buffer is a still picture of the screen)."""
+        """Mouse wheel moves the selection; in text mode it scrolls the app under the caret and reads it again."""
         if self.text is not None:
+            if self.text.get("buf") is not None:
+                self.text_scroll(self.text_notches("line") * (-1 if ev.angleDelta().y() > 0 else 1))
             return
         self.move_sel(-1 if ev.angleDelta().y() > 0 else 1)
 

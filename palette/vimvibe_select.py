@@ -187,6 +187,70 @@ def parse_count(prefix):
     return int(digits) if digits and int(digits) > 0 else 1
 
 
+def estimate_shift(old, new, tolerance=4):
+    """How far the text moved between two readings of the screen (after a scroll): the (dx, dy) that most words share.
+    Words are paired by identical text at nearly the same x (a vertical scroll keeps the column). Only words that
+    occur exactly once in each reading count: repeated words ("Row" on every row of a list) would pair with the wrong
+    copy and vote for "nothing moved" (measured on a list). The displacement most pairs agree on within `tolerance` px
+    wins, but a moving group beats a still one: a scroll moves one part of the screen (a list, a page) while the rest
+    (other windows, toolbars) stays, and the still part must not outvote what was scrolled (measured: a terminal beside
+    a scrolled list). None when fewer than 3 pairs agree (the content changed, or the scroll went past everything
+    that was on screen)."""
+    def unique(words):
+        """Words of 2+ characters whose text occurs once, by text."""
+        seen = {}
+        for w in words:
+            if len(w["text"]) >= 2:
+                seen.setdefault(w["text"], []).append(w)
+        return {t: ws[0] for t, ws in seen.items() if len(ws) == 1}
+
+    olds, news = unique(old), unique(new)
+    votes = [(news[t]["x"] - w["x"], news[t]["y"] - w["y"]) for t, w in olds.items()
+             if t in news and abs(news[t]["x"] - w["x"]) <= tolerance]
+    best, best_key = [], None
+    for _, dy in votes:
+        agree = [v for v in votes if abs(v[1] - dy) <= tolerance]
+        key = (len(agree) >= 3 and abs(dy) > tolerance, len(agree))  # moving groups of 3+ first, then size
+        if best_key is None or key > best_key:
+            best, best_key = agree, key
+    if len(best) < 3:
+        return None
+    dys = sorted(v[1] for v in best)
+    dxs = sorted(v[0] for v in best)
+    return dxs[len(dxs) // 2], dys[len(dys) // 2]
+
+
+def moved_region(old, new, shift, tolerance=4):
+    """The rectangle (x0, y0, x1, y1) of the new reading that the scroll moved by `shift`: around the unique words
+    that moved by it. The caret is kept inside it, so it never jumps out of the scrolled list into a toolbar or another
+    window. None when the shift is (about) zero or nothing moved by it."""
+    dx, dy = shift
+    if abs(dy) <= tolerance and abs(dx) <= tolerance:
+        return None
+    olds = {w["text"]: w for w in old}
+    boxes = [n for n in new if n["text"] in olds and abs(n["x"] - olds[n["text"]]["x"] - dx) <= tolerance
+             and abs(n["y"] - olds[n["text"]]["y"] - dy) <= tolerance]
+    if not boxes:
+        return None
+    return (min(w["x"] for w in boxes), min(w["y"] for w in boxes),
+            max(w["x"] + w["w"] for w in boxes), max(w["y"] + w["h"] for w in boxes))
+
+
+def nearest_word(layout, x, y, region=None):
+    """Index of the word whose centre is nearest to the point (x, y), among the words inside `region` (x0, y0, x1,
+    y1; all words when None or when none is inside); None for an empty layout."""
+    if not len(layout):
+        return None
+    pool = range(len(layout))
+    if region:
+        x0, y0, x1, y1 = region
+        inside = [i for i in pool if x0 - 2 <= layout.center_x(i) <= x1 + 2
+                  and y0 - 2 <= layout.words[i]["y"] + layout.words[i]["h"] / 2 <= y1 + 2]
+        pool = inside or pool
+    return min(pool, key=lambda i: (layout.words[i]["x"] + layout.words[i]["w"] / 2 - x) ** 2
+               + (layout.words[i]["y"] + layout.words[i]["h"] / 2 - y) ** 2)
+
+
 COLUMN_SLACK = 48  # px: a line whose nearest word is this close to the caret's column counts as being in that column
 LABEL_ALPHABET = "asdfghjklqwertyuiopzxcvbnm"  # home row first: the most-used labels are the easiest to type
 
@@ -220,7 +284,9 @@ class Buffer:
       f                labels on every word: type one to jump there   / n N    search, next / previous match
       Esc              stop the label jump, search, count or selection; with nothing left, leave text mode
 
-    Returned actions: ("copy", text), ("paste_field",), ("paste_here",), ("leave",), ("message", text)."""
+    Returned actions: ("copy", text), ("paste_field",), ("paste_here",), ("leave",), ("message", text), and
+    ("scroll", direction, key) when j / k hit the edge of the screen: the overlay scrolls the app, reads the screen
+    again and replays the key (Ctrl+E / Ctrl+Y / Ctrl+D / Ctrl+U / Ctrl+F / Ctrl+B scroll in the overlay itself)."""
 
     def __init__(self, words, alphabet=LABEL_ALPHABET, join_lines="newline"):
         """Build the buffer over `words` (see Layout) with the caret on the first word."""
@@ -313,8 +379,11 @@ class Buffer:
             return self._copy(*spans[key]) if key in spans else None
         motion = {"h": "b", "b": "b", "l": "w", "w": "w", "e": "w", "j": "j", "k": "k", "0": "0", "^": "0", "$": "$", "G": "G"}.get(key)
         if motion:
+            before = self.sel.cursor
             self.sel.move(motion, count)
             self._moved()
+            if motion in "jk" and self.sel.cursor == before:  # no line further down / up on screen: scroll, like Vim
+                return ("scroll", 1 if motion == "j" else -1, key)
             return None
         if key in "gy":
             self.pending = count_text + key
@@ -343,6 +412,35 @@ class Buffer:
         if key in ("n", "N") and self.last_search:
             return self._find(self.last_search, 1 if key == "n" else -1)
         return None
+
+    def carry_over(self, old, shift):
+        """After a scroll: put the caret (and, while selecting, the anchor) of the `old` buffer on the same words in
+        this one, moved by `shift` (dx, dy) from `estimate_shift`. Returns False when the selection could not be kept
+        (its start scrolled off screen), so the caller can say so; the caret is always placed."""
+        if not len(self) or not len(old):
+            return True
+        dx, dy = shift
+
+        def moved(i):
+            """Where word i of the old buffer is now (its centre)."""
+            w = old.layout.words[i]
+            return w["x"] + w["w"] / 2 + dx, w["y"] + w["h"] / 2 + dy
+
+        region = moved_region(old.layout.words, self.layout.words, shift)
+        cx, cy = moved(old.sel.cursor)
+        self.sel.restart(nearest_word(self.layout, cx, cy, region))
+        if not old.visual:
+            return True
+        ax, ay = moved(old.sel.anchor)
+        top = min(w["y"] for w in self.layout.words)
+        bottom = max(w["y"] + w["h"] for w in self.layout.words)
+        if not top - 4 <= ay <= bottom + 4:
+            return False
+        cursor = self.sel.cursor
+        self.sel.restart(nearest_word(self.layout, ax, ay, region))
+        self.sel.jump(cursor)
+        self.visual, self.sel.mode = old.visual, old.sel.mode
+        return True
 
     def visual_copy(self):
         """`y` while selecting: copy the selection and stop selecting (Vim leaves visual mode after a yank)."""
@@ -406,4 +504,4 @@ class Buffer:
         if self.visual:
             return f"-- {state} --{pending} · [h j k l w b 0 $] extend · [y] copy · [Esc] stop selecting"
         return (f"-- {state} --{pending} · [h j k l w b 0 $ gg G] move · [v V] select · [y] copy · "
-                f"[p] paste into a field · [P] paste here · [f] jump · [/] search · [Esc] back")
+                f"[p] paste into a field · [P] paste here · [f] jump · [/] search · [Ctrl+D U] scroll · [Esc] back")

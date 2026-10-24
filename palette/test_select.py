@@ -1,7 +1,7 @@
 """Tests for the copy-mode selection model (run: cd palette && python3 -m unittest test_select)."""
 import unittest
 
-from vimvibe_select import Buffer, Layout, Selection, parse_count, word_labels
+from vimvibe_select import Buffer, Layout, Selection, estimate_shift, parse_count, word_labels
 
 
 def word(text, x, y, w=None, h=12, line=None):
@@ -210,6 +210,55 @@ class BufferTests(unittest.TestCase):
         b = Buffer([])
         self.assertEqual(b.key("w")[0], "message")
         self.assertEqual(b.key("Escape"), ("leave",))
+
+    def test_j_at_the_bottom_asks_to_scroll(self):
+        """j on the last line (k on the first) cannot move: the buffer asks the overlay to scroll and replay the key."""
+        keys(self.b, "G")
+        self.assertEqual(self.b.key("j"), ("scroll", 1, "j"))
+        keys(self.b, "gg")
+        self.assertEqual(self.b.key("k"), ("scroll", -1, "k"))
+
+    def test_shift_and_carry_over_after_a_scroll(self):
+        """After the page scrolled up by 20 px, the shift is found from the words both readings share, and the caret
+        and a selection whose start is still on screen land on the same words."""
+        b = Buffer(PAGE)
+        keys(b, "jv$")                                    # selecting "second line here", caret on "here"
+        scrolled = [dict(w, y=w["y"] - 20) for w in PAGE if w["y"] - 20 >= 0] + [word("fourth", 0, 50), word("line", 60, 50)]
+        self.assertEqual(estimate_shift(b.layout.words, scrolled), (0, -20))
+        nb = Buffer(scrolled)
+        self.assertTrue(nb.carry_over(b, (0, -20)))
+        self.assertEqual(nb.sel.text(), "second line here")
+        self.assertEqual(nb.visual, "word")
+
+    def test_selection_start_scrolled_away(self):
+        """If the selection's start left the screen, the caret is still carried over but the selection is not."""
+        b = Buffer(PAGE)
+        keys(b, "vG")                                     # from "Hello" to "last"
+        scrolled = [dict(w, y=w["y"] - 40) for w in PAGE if w["y"] - 40 >= 0]
+        nb = Buffer(scrolled)
+        self.assertFalse(nb.carry_over(b, (0, -40)))
+        self.assertEqual(nb.layout.words[nb.sel.cursor]["text"], "last")
+
+    def test_repeated_words_do_not_fool_the_shift(self):
+        """A list whose rows all start with the same word: only the unique words (the numbers) decide the shift."""
+        rows = lambda first, top: [w for i in range(6) for w in (word("Row", 0, top + 20 * i), word(str(first + i), 40, top + 20 * i))]
+        self.assertEqual(estimate_shift(rows(10, 0), rows(12, 0)), (0, -40))   # scrolled two rows
+
+    def test_a_scrolled_list_beats_the_still_text_beside_it(self):
+        """Only a list scrolled (by 3 rows), a terminal beside it stayed: the list's movement is the shift, and a caret
+        that scrolled off the list's top lands on the list's top row, not on the terminal."""
+        term = [word(t, 300, 20 * i) for i, t in enumerate(["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"])]
+        rows = lambda first: [word(f"r{first + i}", 0, 20 * i) for i in range(6)]
+        old, new = term + rows(10), term + rows(13)
+        self.assertEqual(estimate_shift(old, new), (0, -60))
+        b = Buffer(old); keys(b, "j")                    # caret on r11 (left column)
+        nb = Buffer(new)
+        nb.carry_over(b, (0, -60))
+        self.assertEqual(nb.layout.words[nb.sel.cursor]["text"], "r13")   # r11 left the screen: the list's top row
+
+    def test_no_shift_without_enough_shared_words(self):
+        """Fewer than three agreeing pairs (new content) give no shift."""
+        self.assertIsNone(estimate_shift(PAGE, [word("other", 0, 0), word("words", 50, 0)]))
 
     def test_word_labels(self):
         """Labels are distinct, equally long, two letters while they fit."""

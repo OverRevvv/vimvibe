@@ -453,10 +453,14 @@ class SettingsWindow(QWidget):
         tf.addRow("Copied lines:", self.text_join)
         self.text_labels = QLineEdit(); self.text_labels.setPlaceholderText("asdfghjklqwertyuiopzxcvbnm")
         tf.addRow("Jump label letters (f):", self.text_labels)
+        self.text_line = QDoubleSpinBox(); self.text_line.setRange(0.2, 10.0); self.text_line.setSingleStep(0.5); self.text_line.setSuffix(" wheel notches")
+        tf.addRow("Ctrl+E / Ctrl+Y and j / k past the edge scroll:", self.text_line)
+        self.text_page = QDoubleSpinBox(); self.text_page.setRange(1.0, 40.0); self.text_page.setSingleStep(1.0); self.text_page.setSuffix(" wheel notches")
+        tf.addRow("Ctrl+F / Ctrl+B scroll (Ctrl+D / U half):", self.text_page)
         tf.addRow("", QLabel("<small>Needs OCR (above). Keys: <b>h j k l w b 0 $ gg G</b> move (counts work: 5w), "
                              "<b>v</b> / <b>V</b> select words / lines, <b>y</b> copy (<b>yy</b> line, <b>yw</b> word), "
                              "<b>p</b> paste into a text field, <b>P</b> paste where the keyboard is, <b>f</b> jump by label, "
-                             "<b>/</b> search (<b>n</b> / <b>N</b>), <b>Esc</b> back. <b>Ctrl+Tab</b> goes through all modes.</small>",
+                             "<b>/</b> search (<b>n</b> / <b>N</b>), <b>Ctrl+E Y D U F B</b> or the wheel scroll the app and read it again, <b>Esc</b> back. <b>Ctrl+Tab</b> goes through all modes.</small>",
                              textFormat=Qt.RichText, wordWrap=True))
         f.addRow(tbox)
         return w
@@ -711,6 +715,7 @@ class SettingsWindow(QWidget):
         text = {**d["text"], **cfg.get("text", {})}
         self.text_dim.setValue(int(text["dim"])); self.text_labels.setText(str(text["labels"]))
         self.text_join.setCurrentIndex(max(0, self.text_join.findData(text["join_lines"])))
+        self.text_line.setValue(float(text["line_notches"])); self.text_page.setValue(float(text["page_notches"]))
         ocr = {**d["ocr"], **cfg.get("ocr", {})}
         self.ocr_lang.setText(str(ocr["lang"])); self.ocr_conf.setValue(int(ocr["min_confidence"]))
         self.ocr_timeout.setValue(int(ocr["timeout_ms"])); self.screen_width.setValue(int(mouse.get("screen_width", 0)))
@@ -774,6 +779,7 @@ class SettingsWindow(QWidget):
         cfg.setdefault("clipboard", {}).update(enabled=self.clip_on.isChecked())
         cfg.setdefault("accessibility", {}).update(offer_restart=self.offer_restart.isChecked(), enable_on_start=self.enable_on_start.isChecked())
         cfg.setdefault("text", {}).update(dim=self.text_dim.value(), join_lines=self.text_join.currentData(),
+                                          line_notches=round(self.text_line.value(), 1), page_notches=round(self.text_page.value(), 1),
                                           labels=self.text_labels.text().strip().lower() or self.defaults["text"]["labels"])
         cfg.setdefault("ocr", {}).update(lang=self.ocr_lang.text().strip() or "eng", min_confidence=float(self.ocr_conf.value()),
                                          timeout_ms=self.ocr_timeout.value())

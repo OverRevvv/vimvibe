@@ -100,6 +100,8 @@ accelerate = true          # speed up while a key is held
 dim = 15                   # darken the screen behind it, percent 0–60
 join_lines = "newline"     # copied lines are joined with "newline" or "space"
 labels = "asdfghjklqwertyuiopzxcvbnm"   # letters of the f-jump labels
+line_notches = 1.0         # Ctrl+E / Ctrl+Y and j / k past the screen edge scroll this many wheel notches
+page_notches = 8.0         # Ctrl+F / Ctrl+B scroll this many notches (Ctrl+D / Ctrl+U half)
 
 [ocr]                      # the OCR labels for apps that expose nothing (on/off: [mouse] ocr)
 lang = "eng"               # tesseract language(s), e.g. "eng+deu" (install each language's data)

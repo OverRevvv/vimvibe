@@ -248,6 +248,34 @@ class OverlayKeys(unittest.TestCase):
         self.assertEqual(self.daemon.named("SendKeys")[0][1], ("ctrl+v",))
         self.o.hide()
 
+    def test_text_mode_scroll_reads_again(self):
+        """Ctrl+D scrolls the app under the caret (nothing drawn, input let through), the screen is read again, the
+        caret stays on its word; j past the bottom scrolls one line step and is replayed on the new words."""
+        self.key(Qt.Key_T, Qt.ControlModifier, "\x14"); QTest.qWait(250)
+        words = [{"text": t, "x": 10, "y": y, "w": 40, "h": 12, "line": f"1.1.{y}"} for t, y in
+                 (("alpha", 10), ("bravo", 30), ("charlie", 50), ("delta", 70))]
+        self.o.text_words(P.json.dumps({"ok": True, "words": words}))
+        self.tap(Qt.Key_J, text="j")                                     # caret on "bravo"
+        self.daemon.calls.clear()
+        self.key(Qt.Key_D, Qt.ControlModifier, "\x04")
+        scroll = self.daemon.named("PointerScroll")[0][1]
+        self.assertEqual(scroll[:2], (0, 40)); self.assertEqual(self.o.text["state"], "capturing")
+        QTest.qWait(250); self.assertTrue(self.daemon.named("TextCapture"))
+        moved = [dict(w, y=w["y"] - 20) for w in words[1:]] + [{"text": "echo", "x": 10, "y": 70, "w": 40, "h": 12, "line": "1.1.90"}]
+        self.o.text_words(P.json.dumps({"ok": True, "words": moved}))
+        buf = self.o.text["buf"]
+        self.assertEqual(buf.layout.words[buf.sel.cursor]["text"], "bravo")  # carried over by the 20 px shift
+        self.tap(Qt.Key_G, Qt.ShiftModifier, "G")                         # caret on "echo", the last line
+        self.daemon.calls.clear()
+        self.tap(Qt.Key_J, text="j")                                     # no line below: scroll and replay j
+        self.assertEqual(self.daemon.named("PointerScroll")[0][1][:2], (0, 10))
+        QTest.qWait(250)
+        more = [dict(w, y=w["y"] - 20) for w in moved[1:]] + [{"text": "foxtrot", "x": 10, "y": 70, "w": 40, "h": 12, "line": "1.1.99"}]
+        self.o.text_words(P.json.dumps({"ok": True, "words": more}))
+        buf = self.o.text["buf"]
+        self.assertEqual(buf.layout.words[buf.sel.cursor]["text"], "foxtrot")
+        self.o.leave_text(); self.o.hide()
+
     def test_mode_cycle(self):
         """Ctrl+Tab goes labels -> grid -> pointer movement -> text -> labels; Ctrl+Shift+Tab goes back."""
         seen = []

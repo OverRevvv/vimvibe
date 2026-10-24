@@ -473,7 +473,8 @@ impl Daemon {
     }
 
     /// Text mode, step 1: take a screenshot of the whole screen and return as soon as it is taken (the overlay hides its
-    /// drawing first, so the screenshot shows only the apps). Step 2 runs in the background: tesseract reads the words
+    /// drawing first, so the screenshot shows only the apps). A scroll still gliding is waited for first, so text mode
+    /// can scroll the app and read it again. Step 2 runs in the background: tesseract reads the words
     /// and `TextWords(json)` delivers them. Refused when OCR is off or spectacle / tesseract are missing.
     async fn text_capture(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         let cfg = config::load();
@@ -483,6 +484,9 @@ impl Daemon {
         if !crate::ocr::available() {
             return json!({"ok": false, "error": "text mode needs spectacle and tesseract (sudo dnf install tesseract)"}).to_string();
         }
+        // text mode scrolls the app and then reads the screen again: the screenshot must show where the glide ends
+        wait_scroll_idle(&self.0).await;
+        tokio::time::sleep(Duration::from_millis(60)).await; // the app repaints after its last scroll event
         let png = crate::ocr::shot_path("text");
         let t0 = Instant::now();
         if let Err(e) = crate::ocr::screenshot(&png).await {
