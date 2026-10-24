@@ -650,6 +650,7 @@ impl Act {
 /// Do `act` on snapshot element `id`: close the overlay first, then window/title-bar/app results via KWin or the
 /// launcher, elements via the semantic ladder with the pointer as fallback. Returns the JSON result for the UI.
 async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'_>) -> Value {
+    let cfg = config::load();
     let (el, geometry, extra) = {
         let guard = sh.snap.lock().await;
         match guard.as_ref() {
@@ -673,6 +674,19 @@ async fn activate_id(sh: &Arc<Shared>, id: usize, act: Act, em: &SignalEmitter<'
         // normal elements: Click walks the semantic ladder, falling back to a pointer click when it asks for one;
         // Focus tries grab_focus, then clicks text-like roles; the rest (right click, hover, ...) are pointer actions
         match act {
+            // A real click first: it behaves exactly like the hardware mouse (popups open and stay open, the app sees
+            // a press), while an accessibility action can report success and still not do what a click does (a
+            // combo box's popup closes again once the window regains focus). The semantic ladder is the fallback
+            // for elements with no place on screen, when the pointer isn't set up, or `click_with = "semantic"`.
+            Act::Click if cfg.behavior.click_with != "semantic" && crate::pointer::is_set_up() && el.rect.2 > 0 && el.rect.3 > 0 && el.enabled && geometry.is_some() => {
+                match pointer_action(sh, &el, geometry, Act::Click).await {
+                    Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "pointer"})),
+                    Err(pe) => match el.activate(&sh.a11y, false).await {
+                        Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "semantic"})),
+                        Err(e) => Err(anyhow::anyhow!("{pe}; {e}")),
+                    },
+                }
+            }
             Act::Click => match el.activate(&sh.a11y, crate::pointer::is_set_up()).await {
                 Ok(msg) => Ok(json!({"ok": true, "message": msg, "via": "semantic"})),
                 Err(e) if e.downcast_ref::<crate::model::NeedsPointer>().is_some() => match pointer_action(sh, &el, geometry, Act::Click).await {
@@ -746,7 +760,8 @@ async fn pointer_action(sh: &Shared, el: &Element, geometry: Option<(i32, i32, i
                 _ => (Button::Left, 1, "clicked"),
             };
             // a right click opens a menu where the pointer is, so it must stay there; plain clicks restore it
-            let restore = matches!(act, Act::Click | Act::Double | Act::Middle);
+            // (and so must the pointer when the click opens a popup: moving away would close a hover-driven one)
+            let restore = matches!(act, Act::Click | Act::Double | Act::Middle) && !matches!(el.role.as_str(), "ComboBox" | "PushButtonMenu" | "Menu");
             p.click_at(cx, cy, button, count, restore).await.map(|_| format!("{what} at ({cx:.0}, {cy:.0}) through the portal"))
         }
     };

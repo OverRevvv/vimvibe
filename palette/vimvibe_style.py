@@ -58,6 +58,8 @@ DEFAULTS = {
     },
     "hints": {"delay_ms": 0, "after_input": False, "auto_activate": False},
     "behavior": {"continuous": False, "continuous_delay_ms": 500,
+                 "double_tap_ms": 250,       # Enter pressed twice within this many ms double-clicks (0 = off: Enter clicks at once)
+                 "click_with": "pointer",    # Enter clicks with a real pointer click (like a mouse) or "semantic" (the app's action first)
                  "double_esc_close": True},  # Esc must be pressed twice to close vimvibe (one Esc only steps back / warns)
     "scroll": {
         "keys": "hjkl",              # layout of the direction keys: hjkl (Vim) or ijkl

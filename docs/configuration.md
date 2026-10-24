@@ -49,6 +49,8 @@ auto_activate = false      # true: a fully typed label clicks at once (Vimium-st
 continuous = false         # come back after each click
 continuous_delay_ms = 500
 double_esc_close = true    # Esc must be pressed twice to close vimvibe (one Esc only steps back or warns)
+double_tap_ms = 250        # Enter twice within this many ms double-clicks; 0 = off (Enter then clicks at once, with no wait)
+click_with = "pointer"     # Enter clicks with a real pointer click, like a mouse (popups open and stay open); "semantic" = the app's own action first
 
 [keys]                     # only what you changed is written; see Using vimvibe → Customizing keys
 toggle_panel = ["Ctrl+Space"]

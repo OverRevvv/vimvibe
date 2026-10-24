@@ -59,12 +59,15 @@ impl Default for Scroll {
 #[serde(default)]
 pub struct Behavior {
     pub double_esc_close: bool,
+    /// How Enter clicks an element: `"pointer"` (a real click at the element, like a hardware mouse; the accessibility
+    /// action is only the fallback) or `"semantic"` (the app's own action first, a pointer click only as a fallback).
+    pub click_with: String,
 }
 
 impl Default for Behavior {
     /// Esc twice closes; a single Esc only steps back or warns.
     fn default() -> Self {
-        Behavior { double_esc_close: true }
+        Behavior { double_esc_close: true, click_with: "pointer".into() }
     }
 }
 

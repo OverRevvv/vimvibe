@@ -46,6 +46,7 @@ class OverlayKeys(unittest.TestCase):
         self.o.meta = {"origin": [0, 0, 800, 600]}
         self.o.resize(800, 600); self.o.show(); self.o.create()
         self.o.hits, self.o.elements = [], []
+        self.o.cfg["behavior"]["double_tap_ms"] = 0   # most tests want Enter to click at once; the double-tap test turns it on
 
     def key(self, k, mods=Qt.NoModifier, text="", release=False):
         """Send a key press (or release) to the search field's event filter, as Qt would."""
@@ -162,12 +163,14 @@ class OverlayKeys(unittest.TestCase):
         self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "stay:move")
 
     def test_mouse_modes_stay_open_after_a_click(self):
-        """Enter clicks without leaving the mouse mode (Alt+Enter double, Ctrl+Alt+Enter middle); with
+        """Enter clicks without leaving the mouse mode (Enter twice double, Ctrl+Alt+Enter middle); with
         stay_after_click off the overlay closes as before."""
         self.o.enter_move(); self.daemon.calls.clear()
         self.tap(Qt.Key_Return); QTest.qWait(150)
-        self.tap(Qt.Key_Return, Qt.AltModifier); QTest.qWait(150)
+        self.o.cfg["behavior"]["double_tap_ms"] = 200
+        self.tap(Qt.Key_Return); self.tap(Qt.Key_Return); QTest.qWait(150)   # two Enters in time: one double click
         self.tap(Qt.Key_Return, Qt.ControlModifier | Qt.AltModifier); QTest.qWait(150)
+        self.o.cfg["behavior"]["double_tap_ms"] = 0
         acts = [c[1][3] for c in self.daemon.named("PointerAct")]
         self.assertEqual(acts, ["stay:click", "stay:double", "stay:middle"]); self.assertEqual(self.o.mouse, "move")
         self.o.enter_grid(); self.tap(Qt.Key_Return); QTest.qWait(150)
@@ -175,6 +178,24 @@ class OverlayKeys(unittest.TestCase):
         self.o.cfg["mouse"]["stay_after_click"] = False
         self.tap(Qt.Key_Return); QTest.qWait(150)
         self.assertIsNone(self.o.mouse); self.assertEqual(self.daemon.named("PointerAct")[-1][1][3], "click")
+
+    def test_enter_double_tap_double_clicks(self):
+        """One Enter clicks after the double-tap time; two within it double-click the same element (like the mouse);
+        Alt+Enter no longer does anything; the right-click key never waits."""
+        el = {"name": "x", "role": "Button", "enabled": True}
+        self.o.hits = [{"id": 7, "hint": "SA", "element": el}, {"id": 8, "hint": "SB", "element": el}]; self.o.sel = 0
+        self.o.cfg["behavior"]["double_tap_ms"] = 120
+        self.tap(Qt.Key_Return); self.assertFalse(self.daemon.named("ActivateWith"))   # waiting for a second Enter
+        QTest.qWait(300)
+        self.assertEqual([c[1][1] for c in self.daemon.named("ActivateWith")], ["click"])
+        self.daemon.calls.clear(); self.o.show(); self.o.sel = 1
+        self.tap(Qt.Key_Return); self.tap(Qt.Key_Return); QTest.qWait(300)
+        self.assertEqual([(c[1][0], c[1][1]) for c in self.daemon.named("ActivateWith")], [(8, "double")])
+        self.daemon.calls.clear(); self.o.show()
+        self.tap(Qt.Key_Return, Qt.AltModifier); QTest.qWait(300)
+        self.assertFalse(self.daemon.named("ActivateWith"))
+        self.tap(Qt.Key_Return, Qt.ControlModifier); QTest.qWait(150)
+        self.assertEqual([c[1][1] for c in self.daemon.named("ActivateWith")], ["right"])
 
     def test_input_jump_insert_and_fallback(self):
         """Ctrl+I in the search shows only the text fields, again selects the next; in the movement mode it clicks and

@@ -12,7 +12,7 @@ Every key and mode, in detail. New here? Start with the [Overview](../README.md)
 | Scroll | hold **Space** + **J** (down) / **K** (up) / **H** (left) / **L** (right), or **D** / **U** — scrolls the selected element, or the window; **Shift** = faster; release Space for fresh labels ([details](#scrolling-and-arrow-keys)) |
 | Arrow keys in the app | hold **Space** + **Ctrl** + **H J K L** — ← ↓ ↑ → (needs the keyboard permission); keep Space held and press H J K L |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
-| Right click / double click / middle click | **Ctrl+Enter** / **Alt+Enter** / **Shift+Enter** |
+| Right click / double click / middle click | **Ctrl+Enter** / tap **Enter** twice, like a mouse / **Shift+Enter** |
 | Move the pointer onto it (hover) | off by default (bind `tap_hover` in Settings → Keys, e.g. a tapped Ctrl) |
 | Give it keyboard focus (e.g. a text field) | the same key, tapped twice |
 | Act on result row *n* / just select it | **Ctrl+1…9** / **Ctrl+Shift+1…9** |
@@ -116,7 +116,7 @@ is divided again; keep going as deep as you like (4 times by default). Then:
 
 | Key | Does |
 |---|---|
-| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Alt+Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
+| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Enter Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
 | **Space** | only move the pointer there, no click |
 | **Backspace** | zoom out one step (or drop a half-typed cell name) |
 | **Ctrl+Shift+G** | switch between the window and the whole screen |
@@ -185,7 +185,7 @@ possible by hand in `[keys]`; a value is a string or a list, and an empty list u
 toggle_panel = ["Space", "Ctrl+Space"] # hide / show the search panel (labels and typing keep working); plain Space only acts while the search is empty
 click = ["Return", "Enter"]
 right_click = ["Ctrl+Return"]
-double_click = ["Alt+Return"]
+double_click = []                      # unbound: tap Enter twice (within [behavior] double_tap_ms) instead
 middle_click = ["Shift+Return"]
 close = ["Escape"]
 settings = ["Ctrl+,", "Ctrl+Shift+,"]

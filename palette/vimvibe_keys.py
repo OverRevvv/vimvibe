@@ -26,7 +26,7 @@ ACTIONS = [
     ("toggle_panel", "Hide / show the search panel (labels stay). Plain Space only hides it while the search is empty", ["Space", "Ctrl+Space"], "key"),
     ("click", "Click the selected element", ["Return", "Enter"], "key"),
     ("right_click", "Right click", ["Ctrl+Return", "Ctrl+Enter"], "key"),
-    ("double_click", "Double click", ["Alt+Return", "Alt+Enter"], "key"),
+    ("double_click", "Double click (also: tap Enter twice)", [], "key"),
     ("middle_click", "Middle click", ["Shift+Return", "Shift+Enter", "Ctrl+Alt+Return", "Ctrl+Alt+Enter"], "key"),
     ("close", "Close", ["Escape"], "key"),
     ("settings", "Open Settings", ["Ctrl+,", "Ctrl+Shift+,"], "key"),

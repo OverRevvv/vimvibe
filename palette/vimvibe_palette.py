@@ -11,7 +11,7 @@ window on the target's screen holds a search panel, and every element of the tar
 
   type a label or a name   narrow the results; labels that no longer match disappear
   Enter                    click the selected element         Ctrl+Enter   right click
-  Alt+Enter                double click                       Shift+Enter  middle click
+  Enter, Enter (twice)     double click                       Shift+Enter  middle click
   (tap Ctrl to hover / twice to focus is off by default: bind tap_hover in Settings → Keys)
   Ctrl+1..9                act on row n                       Ctrl+Shift+1..9  select row n
   ↑ ↓ / Tab / Ctrl+N Ctrl+P  move the selection               PageUp / PageDown  by a page
@@ -153,6 +153,9 @@ class Overlay(QWidget):
         self.panel = QRectF()
         self.tap = {}         # modifier key -> press time (ms), cleared when another key comes in between
         self.ctrl_taps = 0
+        self.enter_timer = QTimer(self); self.enter_timer.setSingleShot(True)  # waits for a possible second Enter (double click)
+        self.enter_timer.timeout.connect(self.enter_fire)
+        self.enter_pending = None   # what the waiting Enter will do if no second one comes: a callable taking the action name
         self.space_down = False   # Space is held: H J K L scroll instead of typing
         self.space_used = False   # ... and was used for scrolling (so releasing it types no space)
         self.scrolling = False
@@ -274,6 +277,7 @@ class Overlay(QWidget):
     def closed(self):
         """Daemon signal: the snapshot was dropped; hide."""
         self.show_labels_timer.stop()
+        self.enter_cancel()
         try:
             self.end_scroll(refresh=False)
             self.leave_mouse()
@@ -583,6 +587,33 @@ class Overlay(QWidget):
         self.place_panel(keep_if_clear=True)
         self.update()
 
+    def enter_tap(self, run):
+        """A plain Enter: with `[behavior] double_tap_ms` > 0 it waits that long for a second Enter. Once more within the
+        time is a double click, like the mouse; otherwise the single click goes out when the time is up. `run(action)`
+        performs the click ("click" or "double") on the target chosen now, so moving the selection while waiting
+        changes nothing. Other click keys (right, middle) never wait. An Enter held down (key repeat) counts once."""
+        wait = int(self.cfg["behavior"].get("double_tap_ms", 250))
+        if wait <= 0:
+            run("click")
+        elif self.enter_pending is not None:  # second Enter in time
+            pending, self.enter_pending = self.enter_pending, None
+            self.enter_timer.stop()
+            pending("double")
+        else:
+            self.enter_pending = run
+            self.enter_timer.start(wait)
+
+    def enter_fire(self):
+        """The wait for a second Enter ran out: do the single click."""
+        pending, self.enter_pending = self.enter_pending, None
+        if pending is not None:
+            pending("click")
+
+    def enter_cancel(self):
+        """Forget a waiting Enter (the overlay is closing or being dismissed)."""
+        self.enter_timer.stop()
+        self.enter_pending = None
+
     def act(self, action="click", row=None, eid=None):
         """Run an action on a result row (default: the selected one) or on an element id (a clicked label)."""
         if eid is None:
@@ -609,6 +640,7 @@ class Overlay(QWidget):
     def dismiss(self):
         """Close without acting (Esc, click outside)."""
         self.show_labels_timer.stop()
+        self.enter_cancel()
         self.end_scroll(refresh=False)
         self.leave_mouse()
         self.hide()
@@ -1121,7 +1153,11 @@ class Overlay(QWidget):
         elif action == "mouse_insert":
             self.mouse_insert()
         elif click:
-            self.mouse_commit(click)
+            if click == "click":
+                if not ev.isAutoRepeat():
+                    self.enter_tap(self.mouse_commit)
+            else:
+                self.mouse_commit(click)
         elif self.mouse == "grid":
             if action == "mouse_back":
                 if self.grid.back():
@@ -1195,7 +1231,13 @@ class Overlay(QWidget):
                 return True
             click = {"click": "click", "right_click": "right", "double_click": "double", "middle_click": "middle"}.get(action)
             if click:
-                self.act(click); return True
+                if click == "click" and not ev.isAutoRepeat():
+                    if self.hits and 0 <= self.sel < len(self.hits):  # the target is fixed now, not when the wait ends
+                        eid = self.hits[self.sel]["id"]
+                        self.enter_tap(lambda a, eid=eid: self.act(a, eid=eid))
+                elif click != "click":
+                    self.act(click)
+                return True
             if action == "refresh":
                 self.daemon.asyncCall("Refresh"); return True
             if action == "edit_mode":

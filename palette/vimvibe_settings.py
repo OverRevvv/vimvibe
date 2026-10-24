@@ -310,6 +310,13 @@ class SettingsWindow(QWidget):
         f.addRow("Continuous mode:", self.continuous)
         self.double_esc = QCheckBox("Press Esc twice to close vimvibe (one Esc only steps back from the mouse modes)")
         f.addRow("Closing:", self.double_esc)
+        self.double_tap = QSpinBox(); self.double_tap.setRange(0, 600); self.double_tap.setSingleStep(50); self.double_tap.setSuffix(" ms")
+        self.double_tap.setSpecialValueText("off (Enter clicks at once)")
+        f.addRow("Tap Enter twice within:", self.double_tap)
+        self.click_with = QComboBox()
+        self.click_with.addItem("A real click, like a mouse (needs the pointer permission)", "pointer")
+        self.click_with.addItem("The app's own action first (no pointer move)", "semantic")
+        f.addRow("Enter clicks with:", self.click_with)
         self.cdelay = QSpinBox(); self.cdelay.setRange(100, 5000); self.cdelay.setSingleStep(100); self.cdelay.setSuffix(" ms")
         f.addRow("Wait before re-reading:", self.cdelay)
         f.addRow("", QLabel("<small>Continuous mode stops when you press Esc, after typing into a text field, or when "
@@ -635,6 +642,8 @@ class SettingsWindow(QWidget):
         self.continuous.setChecked(bool(beh.get("continuous", False)))
         self.double_esc.setChecked(bool(beh.get("double_esc_close", True)))
         self.cdelay.setValue(int(beh.get("continuous_delay_ms", 500)))
+        self.double_tap.setValue(int(beh.get("double_tap_ms", 250)))
+        self.click_with.setCurrentIndex(max(0, self.click_with.findData(beh.get("click_with", "pointer"))))
         self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
         self.hjkl_action.setCurrentIndex(max(0, self.hjkl_action.findData(scroll.get("hjkl", "scroll"))))
         self.scroll_step.setValue(float(scroll.get("distance", 1.0)))
@@ -695,7 +704,8 @@ class SettingsWindow(QWidget):
         cfg["keys"] = {a: v for a, v in self.key_values.items() if v != keys.DEFAULTS[a]}
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
         cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value(),
-                               double_esc_close=self.double_esc.isChecked())
+                               double_esc_close=self.double_esc.isChecked(), double_tap_ms=self.double_tap.value(),
+                               click_with=self.click_with.currentData())
         cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), distance=round(self.scroll_step.value(), 1),
                              fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
                              edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),

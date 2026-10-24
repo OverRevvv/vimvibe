@@ -109,7 +109,9 @@ impl std::error::Error for NeedsPointer {}
 
 /// Which of an element's actions is the "default click". Toolkits order them arbitrarily (GTK4 list rows only offer
 /// `listitem.scroll-to`, which scrolls but does not activate), so: known activating names first, then any action that
-/// is not a scroll/menu helper, else none (the caller falls back to selection or focus). Empty names (Electron) count as default.
+/// is not a scroll/menu/focus helper, else none (the caller falls back to selection, focus or a real click). Empty names
+/// (Electron) count as default. Focus-only actions are not clicks: Qt's menu buttons offer just `SetFocus`, and "doing"
+/// it reports success while the menu never opens.
 pub fn pick_action(names: &[&str]) -> Option<usize> {
     const PREFERRED: &[&str] = &["click", "press", "activate", "toggle", "check", "select", "open", "jump", "default", ""];
     for want in PREFERRED {
@@ -119,7 +121,7 @@ pub fn pick_action(names: &[&str]) -> Option<usize> {
     }
     names.iter().position(|n| {
         let n = n.to_lowercase();
-        !(n.contains("scroll") || n.contains("menu") || n.contains("context"))
+        !(n.contains("scroll") || n.contains("menu") || n.contains("context") || n.contains("focus"))
     })
 }
 
@@ -139,6 +141,7 @@ mod tests {
         assert_eq!(pick_action(&["ShowMenu", "Press"]), Some(1));
         assert_eq!(pick_action(&["toggle"]), Some(0));
         assert_eq!(pick_action(&[""]), Some(0)); // Electron reports an unnamed default action
+        assert_eq!(pick_action(&["SetFocus"]), None); // focusing is not clicking (Qt menu buttons)
     }
 
     // Scroll and menu helper actions are never chosen as the click action.
