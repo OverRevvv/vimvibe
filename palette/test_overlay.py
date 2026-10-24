@@ -249,7 +249,7 @@ class OverlayKeys(unittest.TestCase):
         self.o.hide()
 
     def test_text_mode_scroll_reads_again(self):
-        """Ctrl+D scrolls the app under the caret (nothing drawn, input let through), the screen is read again, the
+        """Space + D scrolls the app under the caret (nothing drawn, input let through), the screen is read again, the
         caret stays on its word; j past the bottom scrolls one line step and is replayed on the new words."""
         self.key(Qt.Key_T, Qt.ControlModifier, "\x14"); QTest.qWait(250)
         words = [{"text": t, "x": 10, "y": y, "w": 40, "h": 12, "line": f"1.1.{y}"} for t, y in
@@ -257,7 +257,9 @@ class OverlayKeys(unittest.TestCase):
         self.o.text_words(P.json.dumps({"ok": True, "words": words}))
         self.tap(Qt.Key_J, text="j")                                     # caret on "bravo"
         self.daemon.calls.clear()
-        self.key(Qt.Key_D, Qt.ControlModifier, "\x04")
+        self.key(Qt.Key_Space, text=" ")                                 # Space held + D: half a page down
+        self.key(Qt.Key_D, text="d")
+        self.key(Qt.Key_Space, text=" ", release=True)
         scroll = self.daemon.named("PointerScroll")[0][1]
         self.assertEqual(scroll[:2], (0, 40)); self.assertEqual(self.o.text["state"], "capturing")
         QTest.qWait(250); self.assertTrue(self.daemon.named("TextCapture"))

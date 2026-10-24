@@ -196,7 +196,7 @@ The screen as a read-only Vim buffer (`vimvibe_select.py` for the logic, `text_*
    query) and marks the next Enter as "paste here": the field is clicked, then `SendKeys("ctrl+v")`. **P** sends
    Ctrl+V to whatever has the keyboard.
 
-6. **Scrolling.** Ctrl+E / Y / D / U / F / B, the wheel, and j / k past the screen edge call `PointerScroll` at the
+6. **Scrolling.** Space + J / K / E / Y / D / U / F / B (Space, because a held Ctrl makes apps zoom), the wheel, and j / k past the screen edge call `PointerScroll` at the
    caret (the overlay draws nothing and lets input through), then `TextCapture()`, which first waits for the glide to
    end. `estimate_shift` finds how far the text moved from words that occur once in both readings, preferring a
    moving group over still text (a scrolled list next to a still terminal); `carry_over` puts the caret and selection

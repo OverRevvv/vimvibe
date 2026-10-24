@@ -28,7 +28,7 @@ window on the target's screen holds a search panel, and every element of the tar
   Ctrl+M                   mouse movement: hold H J K L to move the pointer (Shift faster, Alt precise), Enter clicks
   Arrows, PgUp/PgDn (D / U in movement)  (in either mouse mode) scroll under the pointer without leaving the mode; Esc in the grid -> movement
   Ctrl+T                   text mode: the words on screen (OCR) as a Vim buffer: h j k l w b 0 $ gg G move, v / V select,
-                           y copy, p paste into a text field, P paste here, f jump by label, / search; Esc back
+                           y copy, p paste into a text field, P paste here, f jump by label, / search; Space + J K / D U / F B scroll; Esc back
   Ctrl+Tab / Ctrl+Shift+Tab  next / previous mode (labels -> grid -> pointer movement -> text)
   Ctrl+Shift+H             clipboard history (Ctrl+J / Ctrl+K or arrows move, Enter pastes)
 All of these (except the Space+H J K L scrolling family and the mouse movement keys) can be rebound in Settings → Keys ([keys] in config.toml);
@@ -66,10 +66,11 @@ TAP_MS = 350        # a modifier released within this time, with no other key, c
 # after acting on these, continuous mode stops: the user is about to type, or a menu/another window takes over
 STOP_CONTINUOUS = {"Entry", "PasswordText", "Text", "Terminal", "DocumentText", "ComboBox", "SpinButton", "Window", "Application",
                    "Menu", "MenuBar", "PushButtonMenu"}
-# text mode's Vim scroll keys (with Ctrl) -> pages scrolled: Ctrl+E / Ctrl+Y a line step, Ctrl+D / Ctrl+U half a page,
-# Ctrl+F / Ctrl+B a page ("line" and "page" sizes come from [text] line_notches / page_notches)
-TEXT_SCROLL = {Qt.Key_E: ("line", 1), Qt.Key_Y: ("line", -1), Qt.Key_D: ("half", 1), Qt.Key_U: ("half", -1),
-               Qt.Key_F: ("page", 1), Qt.Key_B: ("page", -1)}
+# text mode's scroll keys, pressed while Space is held (as in every mode: a held Ctrl would make the app zoom instead of
+# scroll, measured) -> amount: Space+J / K and Space+E / Y a line step, Space+D / U half a page, Space+F / B a page
+# ("line" and "page" sizes come from [text] line_notches / page_notches)
+TEXT_SCROLL = {iv(Qt.Key_J): ("line", 1), iv(Qt.Key_K): ("line", -1), iv(Qt.Key_E): ("line", 1), iv(Qt.Key_Y): ("line", -1),
+               iv(Qt.Key_D): ("half", 1), iv(Qt.Key_U): ("half", -1), iv(Qt.Key_F): ("page", 1), iv(Qt.Key_B): ("page", -1)}
 # Space scroll keys -> (dx, dy). No modifier on purpose: apps treat Ctrl+wheel as zoom (measured: Dolphin does not
 # scroll at all with Ctrl held), Shift+wheel as horizontal, Alt+wheel as "back" in some browsers.
 # X key names the daemon reports for a Ctrl / Alt combination typed over a popup -> Qt keys (single characters are
@@ -176,6 +177,7 @@ class Overlay(QWidget):
         self.mouse = None         # keyboard mouse: None, "grid" (zooming grid) or "move" (H J K L moves the pointer)
         self.text = None          # text mode: {"state": "capturing" | "reading" | "ready", "buf": Buffer or None}
         self.paste_target = False # text mode's p: the next Enter on a text field pastes into it instead of clicking
+        self.text_space = False   # text mode: Space is held, so J K E Y D U F B scroll
         self.grid = None
         self.grid_scope = "window"
         self.esc_at = 0.0         # time of the last Esc that only armed the "press Esc again to close" step
@@ -1086,6 +1088,7 @@ class Overlay(QWidget):
         self.leave_mouse()
         self.clip = None
         self.text = {"state": "capturing", "buf": None}
+        self.text_space = False
         self.flash = ""; self.flash_timer.stop()
         self.edit.setGeometry(-1000, -1000, 10, 10)
         self.sync_field()
@@ -1141,7 +1144,7 @@ class Overlay(QWidget):
             self.update()
             return
         if prev is not None and len(buf) and len(prev):  # scrolled past everything that was on screen: like Vim's
-            w = prev.layout.words[prev.sel.cursor]           # Ctrl+D, the caret keeps its place on the screen
+            w = prev.layout.words[prev.sel.cursor]           # Ctrl+D (Space+D here), the caret keeps its place on the screen
             buf.sel.restart(nearest_word(buf.layout, w["x"] + w["w"] / 2, w["y"] + w["h"] / 2))
             self.text = {"state": "ready", "buf": buf}
             self.update()
@@ -1198,10 +1201,17 @@ class Overlay(QWidget):
 
     def text_event(self, ev):
         """A key while text mode is on (every key is consumed): the mode keys, the clipboard history and Settings work
-        as everywhere; everything else goes to the buffer (see vimvibe_select.Buffer for the Vim keys)."""
+        as everywhere; Space held + J K E Y D U F B scrolls (like Space + J / K in the other modes); everything else
+        goes to the buffer (see vimvibe_select.Buffer for the Vim keys)."""
+        k, mods = iv(ev.key()), iv(ev.modifiers())
+        held_mod = mods & (iv(Qt.ControlModifier) | iv(Qt.AltModifier) | iv(Qt.MetaModifier))
+        searching = self.text.get("buf") is not None and self.text["buf"].search is not None
+        if k == iv(Qt.Key_Space) and not held_mod and not searching:  # Space is a scroll chord here, never typed
+            if not ev.isAutoRepeat():
+                self.text_space = ev.type() == QEvent.KeyPress
+            return True
         if ev.type() != QEvent.KeyPress:
             return True
-        k, mods = iv(ev.key()), iv(ev.modifiers())
         if k in (iv(Qt.Key_Control), iv(Qt.Key_Alt), iv(Qt.Key_Shift), iv(Qt.Key_Meta)):
             return True
         action = self.keymap.match(ev.key(), ev.modifiers())
@@ -1222,11 +1232,10 @@ class Overlay(QWidget):
             if k == iv(Qt.Key_Escape):
                 self.leave_text()
             return True
-        if mods & iv(Qt.ControlModifier) and not mods & (iv(Qt.AltModifier) | iv(Qt.ShiftModifier)):
-            scroll = {iv(key): v for key, v in TEXT_SCROLL.items()}.get(k)
-            if scroll:
-                self.text_scroll(self.text_notches(scroll[0]) * scroll[1])
-                return True
+        if self.text_space and not held_mod and k in TEXT_SCROLL:
+            size, sign = TEXT_SCROLL[k]
+            self.text_scroll(self.text_notches(size) * sign)
+            return True
         name = {iv(Qt.Key_Escape): "Escape", iv(Qt.Key_Return): "Return", iv(Qt.Key_Enter): "Return",
                 iv(Qt.Key_Backspace): "BackSpace"}.get(k)
         if name is None:

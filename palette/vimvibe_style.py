@@ -102,8 +102,8 @@ DEFAULTS = {
         "dim": 15,                   # darken the screen behind the buffer, percent 0–60
         "join_lines": "newline",     # copied lines are joined with: "newline" or "space"
         "labels": "asdfghjklqwertyuiopzxcvbnm",  # letters of the f-jump labels (home row first)
-        "line_notches": 1.0,         # Ctrl+E / Ctrl+Y and j / k past the screen edge scroll this many wheel notches
-        "page_notches": 8.0,         # Ctrl+F / Ctrl+B scroll this many notches (Ctrl+D / Ctrl+U half of it)
+        "line_notches": 1.0,         # Space+J / K, Space+E / Y and j / k past the screen edge scroll this many wheel notches
+        "page_notches": 8.0,         # Space+F / B scroll this many notches (Space+D / U half of it)
     },
     "ocr": {                         # the OCR layer for apps that expose nothing (switched on/off by [mouse] ocr)
         "lang": "eng",               # tesseract language(s), e.g. "eng+deu" (each needs its traineddata installed)

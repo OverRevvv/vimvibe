@@ -454,13 +454,13 @@ class SettingsWindow(QWidget):
         self.text_labels = QLineEdit(); self.text_labels.setPlaceholderText("asdfghjklqwertyuiopzxcvbnm")
         tf.addRow("Jump label letters (f):", self.text_labels)
         self.text_line = QDoubleSpinBox(); self.text_line.setRange(0.2, 10.0); self.text_line.setSingleStep(0.5); self.text_line.setSuffix(" wheel notches")
-        tf.addRow("Ctrl+E / Ctrl+Y and j / k past the edge scroll:", self.text_line)
+        tf.addRow("Space+J / K, Space+E / Y and j / k past the edge scroll:", self.text_line)
         self.text_page = QDoubleSpinBox(); self.text_page.setRange(1.0, 40.0); self.text_page.setSingleStep(1.0); self.text_page.setSuffix(" wheel notches")
-        tf.addRow("Ctrl+F / Ctrl+B scroll (Ctrl+D / U half):", self.text_page)
+        tf.addRow("Space+F / B scroll (Space+D / U half):", self.text_page)
         tf.addRow("", QLabel("<small>Needs OCR (above). Keys: <b>h j k l w b 0 $ gg G</b> move (counts work: 5w), "
                              "<b>v</b> / <b>V</b> select words / lines, <b>y</b> copy (<b>yy</b> line, <b>yw</b> word), "
                              "<b>p</b> paste into a text field, <b>P</b> paste where the keyboard is, <b>f</b> jump by label, "
-                             "<b>/</b> search (<b>n</b> / <b>N</b>), <b>Ctrl+E Y D U F B</b> or the wheel scroll the app and read it again, <b>Esc</b> back. <b>Ctrl+Tab</b> goes through all modes.</small>",
+                             "<b>/</b> search (<b>n</b> / <b>N</b>), <b>Space + J K E Y D U F B</b> or the wheel scroll the app and read it again, <b>Esc</b> back. <b>Ctrl+Tab</b> goes through all modes.</small>",
                              textFormat=Qt.RichText, wordWrap=True))
         f.addRow(tbox)
         return w

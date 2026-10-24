@@ -286,7 +286,7 @@ class Buffer:
 
     Returned actions: ("copy", text), ("paste_field",), ("paste_here",), ("leave",), ("message", text), and
     ("scroll", direction, key) when j / k hit the edge of the screen: the overlay scrolls the app, reads the screen
-    again and replays the key (Ctrl+E / Ctrl+Y / Ctrl+D / Ctrl+U / Ctrl+F / Ctrl+B scroll in the overlay itself)."""
+    again and replays the key (Space + J K E Y D U F B scroll in the overlay itself)."""
 
     def __init__(self, words, alphabet=LABEL_ALPHABET, join_lines="newline"):
         """Build the buffer over `words` (see Layout) with the caret on the first word."""
@@ -504,4 +504,4 @@ class Buffer:
         if self.visual:
             return f"-- {state} --{pending} · [h j k l w b 0 $] extend · [y] copy · [Esc] stop selecting"
         return (f"-- {state} --{pending} · [h j k l w b 0 $ gg G] move · [v V] select · [y] copy · "
-                f"[p] paste into a field · [P] paste here · [f] jump · [/] search · [Ctrl+D U] scroll · [Esc] back")
+                f"[p] paste into a field · [P] paste here · [f] jump · [/] search · [Space+J K D U] scroll · [Esc] back")

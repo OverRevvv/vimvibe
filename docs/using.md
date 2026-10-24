@@ -199,7 +199,7 @@ edited or moved: you navigate, select, copy and paste.
 | **P** | paste where the keyboard is now (Ctrl+V in the app) |
 | **f** (or **s**) | a label on every word; type one to put the caret there |
 | **/** text **Enter**, then **n** / **N** | search the screen's words, next / previous match |
-| **Ctrl+E** / **Ctrl+Y**, **Ctrl+D** / **Ctrl+U**, **Ctrl+F** / **Ctrl+B**, the mouse wheel | scroll the app under the caret (a line step, half a page, a page) and read the screen again; the caret stays on its word |
+| hold **Space** + **J** / **K** (or **E** / **Y**), **D** / **U**, **F** / **B**; the mouse wheel | scroll the app under the caret (a line step, half a page, a page) and read the screen again; the caret stays on its word. Space, not Ctrl, as in every mode: apps zoom when Ctrl is held during a scroll |
 | **j** / **k** past the bottom / top of the screen | scroll one line step and carry on, like Vim |
 | click a word | put the caret there |
 | **Ctrl+Shift+H** | the clipboard history |
