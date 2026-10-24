@@ -1,6 +1,7 @@
 # 12 — Plan: copying text from anywhere on screen
 
-Status: **plan, not built.** Written 2026-10-24 after OCR (tesseract) became part of vimvibe.
+Status: **milestone 1 done** (the selection model, `palette/vimvibe_select.py`, 11 tests in `test_select.py`);
+milestones 2–4 not built. Written 2026-10-24 after OCR (tesseract) became part of vimvibe.
 
 ## Why this comes back
 
@@ -67,7 +68,10 @@ overlay. The app is never touched, so this works the same in every app.
 
 ## Milestones
 
-1. `vimvibe_select.py` with tests, driven by fixed word lists.
+1. ✅ `vimvibe_select.py` with tests, driven by fixed word lists. `Layout` sorts words into reading order and lines
+   (by tesseract's line numbers when given, otherwise by vertical overlap); `Selection` holds anchor and cursor and
+   implements `w b j k 0 $ gg G` with counts (`j`/`k` keep the column), `jump` for a second label, line mode, and
+   `text()` / `rects()` for copying and drawing.
 2. OCR words mode plus `TextRegion()`, then copy mode working on OCR text only. This alone covers every app.
 3. AT-SPI Text source for exact text in accessible apps.
 4. Settings, docs, and the measurements recorded here.

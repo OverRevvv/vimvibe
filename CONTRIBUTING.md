@@ -103,7 +103,7 @@ Run these before you open a pull request:
 ```bash
 cargo test   --release --manifest-path core/Cargo.toml     # Rust unit tests (labels, matching, OCR parsing, key combos, ...)
 cargo clippy --release --manifest-path core/Cargo.toml     # must stay free of warnings
-(cd palette && python3 -m unittest test_keys test_mouse test_overlay)   # overlay logic, headless
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay test_select)   # overlay logic, headless
 (cd palette && python3 -m unittest test_settings)          # settings export/import + Settings window (own process: it
                                                            # points XDG_CONFIG_HOME at a temporary directory)
 ```
@@ -117,6 +117,7 @@ What each suite covers:
 | `test_mouse.py` | grid naming, zooming, depth limits, alphabet clean-up |
 | `test_overlay.py` | the real `Overlay` widget, offscreen, with a fake daemon that records every D-Bus call: Esc Esc, Space panel toggle and scroll chords, mouse modes staying open, Enter twice = double click, Ctrl+I from every mode, clipboard picker, popups |
 | `test_settings.py` | export → import round trip, refusal of foreign or mistyped files, every option survives the Settings window |
+| `test_select.py` | copy mode's selection model: reading order and lines, w / b / j / k / 0 / $ / gg / G with counts, line mode, selected text, highlight rectangles |
 
 Run one test: `(cd palette && python3 -m unittest test_overlay.OverlayKeys.test_enter_double_tap_double_clicks)`.
 
@@ -195,7 +196,7 @@ git switch beta && git pull
 ```bash
 cargo test   --release --manifest-path core/Cargo.toml
 cargo clippy --release --manifest-path core/Cargo.toml
-(cd palette && python3 -m unittest test_keys test_mouse test_overlay)
+(cd palette && python3 -m unittest test_keys test_mouse test_overlay test_select)
 (cd palette && python3 -m unittest test_settings)
 ```
 
@@ -282,6 +283,7 @@ palette/
   vimvibe_style.py     config, defaults, theme  vimvibe_keys.py      rebindable keys (tests: test_keys.py)
   vimvibe_mouse.py     mouse grid logic (tests: test_mouse.py)   vimvibe_clip.py  clipboard history (Klipper) and set-clipboard   test_overlay.py  overlay key behaviour, headless
   test_settings.py     settings export/import and the Settings window
+  vimvibe_select.py    copy mode's selection model over words on screen (tests: test_select.py)
 packaging/       launcher script, systemd user unit, icons      install.sh   installer / upgrader / --uninstall
 packaging/make-tarball.sh, make-rpm.sh, rpm/vimvibe.spec         release tarball and RPM
 .github/workflows/release.yml    on a v* tag: build the tarball, publish the GitHub release
