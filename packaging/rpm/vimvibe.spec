@@ -4,7 +4,7 @@
 %global __strip /bin/true
 
 Name:           vimvibe
-Version:        %{?vv_version}%{!?vv_version:3.0.0}
+Version:        %{?vv_version}%{!?vv_version:3.1.0}
 Release:        1%{?dist}
 Summary:        Keyboard-driven "click anything by typing its name" overlay for KDE Plasma (Wayland)
 License:        MIT
@@ -53,6 +53,9 @@ install -Dm644 vimvibe.desktop %{buildroot}%{_datadir}/applications/vimvibe.desk
 %{_datadir}/applications/vimvibe.desktop
 
 %changelog
+* Sat Oct 24 2026 OverRevvv <rdude1612@gmail.com> - 3.1.0-1
+- Text mode: scrolling with Space chords, copying across many screens
+
 * Sat Oct 24 2026 OverRevvv <rdude1612@gmail.com> - 3.0.0-1
 - Text mode (Ctrl+T), mode cycling, settings export/import, Space-scroll fix
 
