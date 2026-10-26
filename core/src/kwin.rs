@@ -40,6 +40,13 @@ pub struct FocusInfo {
     pub fh: i32,
     #[serde(default)]
     pub ops: String,
+    /// `bufferGeometry` origin: where the app's surface starts. A window that draws its own frame and shadow (Chrome,
+    /// GTK apps) reports its accessibility positions relative to that, not to the visible window (measured: 16 px left,
+    /// 10 px up for a Chrome window that is not maximised). None from an older KWin script.
+    #[serde(default)]
+    pub bx: Option<i32>,
+    #[serde(default)]
+    pub by: Option<i32>,
 }
 
 struct Bridge {
@@ -70,6 +77,7 @@ if (w) {
   callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Report",
     JSON.stringify({pid: w.pid, class: w.resourceClass, caption: w.caption, x: Math.round(g.x), y: Math.round(g.y), w: Math.round(g.width), h: Math.round(g.height),
       id: w.internalId.toString(), fx: Math.round(w.frameGeometry.x), fy: Math.round(w.frameGeometry.y), fw: Math.round(w.frameGeometry.width), fh: Math.round(w.frameGeometry.height),
+      bx: Math.round(w.bufferGeometry.x), by: Math.round(w.bufferGeometry.y),
       ops: (w.closeable ? "X" : "") + (w.maximizable ? "A" : "") + (w.minimizable ? "I" : "") + (w.noBorder ? "" : "D")}));
 }
 "#;
@@ -82,6 +90,7 @@ function report(w) {
   callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Report",
     JSON.stringify({pid: w.pid, class: w.resourceClass, caption: w.caption, x: Math.round(g.x), y: Math.round(g.y), w: Math.round(g.width), h: Math.round(g.height),
       id: w.internalId.toString(), fx: Math.round(w.frameGeometry.x), fy: Math.round(w.frameGeometry.y), fw: Math.round(w.frameGeometry.width), fh: Math.round(w.frameGeometry.height),
+      bx: Math.round(w.bufferGeometry.x), by: Math.round(w.bufferGeometry.y),
       ops: (w.closeable ? "X" : "") + (w.maximizable ? "A" : "") + (w.minimizable ? "I" : "") + (w.noBorder ? "" : "D")}));
 }
 function hook(w) {

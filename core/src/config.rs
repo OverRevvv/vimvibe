@@ -84,12 +84,14 @@ pub struct Behavior {
     pub click_with: String,
     /// After a text field is clicked or focused, hand the keyboard to the app and take Esc to come back (insert mode).
     pub insert_after_field: bool,
+    /// The normal shortcut opens the keep-focus variant too (popups stay open; no Space-hold scrolling, no text mode).
+    pub keep_focus: bool,
 }
 
 impl Default for Behavior {
     /// Esc twice closes; a single Esc only steps back or warns.
     fn default() -> Self {
-        Behavior { double_esc_close: true, click_with: "pointer".into(), insert_after_field: true }
+        Behavior { double_esc_close: true, click_with: "pointer".into(), insert_after_field: true, keep_focus: false }
     }
 }
 

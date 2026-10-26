@@ -108,7 +108,7 @@ mod tests {
 
     // A sample focused window with a title bar, used by the tests below.
     fn focus() -> FocusInfo {
-        FocusInfo { pid: 1, class: "x".into(), caption: "c".into(), x: 213, y: 113, w: 940, h: 560, id: "{a}".into(), fx: 213, fy: 85, fw: 940, fh: 588, ops: "XAID".into() }
+        FocusInfo { pid: 1, class: "x".into(), caption: "c".into(), x: 213, y: 113, w: 940, h: 560, id: "{a}".into(), fx: 213, fy: 85, fw: 940, fh: 588, ops: "XAID".into(), bx: None, by: None }
     }
 
     // With KDE's default button layout the close button is the rightmost one.

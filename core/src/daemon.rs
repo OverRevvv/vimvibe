@@ -71,6 +71,8 @@ pub(crate) fn component() -> String {
 const ACTION: &str = "toggle";
 const QUIT_ACTION: &str = "quit";
 const SETTINGS_ACTION: &str = "settings";
+/// The "keep focus" variant of the toggle shortcut: open without taking the keyboard (see `open_with`).
+const KEEP_ACTION: &str = "toggle-keep-focus";
 const CTRL: i32 = 0x0400_0000;
 const SHIFT: i32 = 0x0200_0000;
 const ALT: i32 = 0x0800_0000;
@@ -87,6 +89,10 @@ fn default_keys() -> ([i32; 1], [i32; 1], Vec<i32>) {
 /// Apps whose windows are popups that close the moment another window takes the keyboard (Plasma's launcher, tray and
 /// calendar popups, KRunner). vimvibe's overlay must take the keyboard, so their elements would vanish before use.
 const CLOSES_ON_FOCUS_LOSS: &[&str] = &["plasmashell", "org.kde.plasmashell", "krunner", "org.kde.krunner"];
+/// Default key of the keep-focus variant: Meta+Shift+Alt+Space (installed), Meta+Ctrl+Alt+Space (development profile).
+fn keep_focus_key() -> i32 {
+    if config::profile().is_empty() { META | SHIFT | ALT | 0x20 } else { META | CTRL | ALT | 0x20 }
+}
 /// Qt::META | Qt::SHIFT | Qt::Key_Space. kglobalaccel keeps a user's own rebinding from System Settings over this default.
 pub(crate) fn default_key() -> i32 {
     default_keys().0[0]
@@ -160,6 +166,8 @@ struct Shared {
     edit_mode_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     /// Insert mode (typing into a field the user focused): the sender that ends it while it waits for Esc.
     insert_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Ends the keep-focus key grab (see `focus_keys_task`).
+    focus_keys_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 struct Daemon(Arc<Shared>);
@@ -169,6 +177,11 @@ impl Daemon {
     /// D-Bus `Trigger()`: open the overlay for the focused window, or close it when it is open.
     async fn trigger(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
         trigger(&self.0, &em).await.to_string()
+    }
+
+    /// D-Bus `TriggerKeepFocus()`: like `Trigger()`, but the overlay never takes the keyboard (popups stay open).
+    async fn trigger_keep_focus(&self, #[zbus(signal_emitter)] em: SignalEmitter<'_>) -> String {
+        trigger_with(&self.0, &em, true).await.to_string()
     }
 
     /// D-Bus `Search(q)`: rank the snapshot's elements for `query` and remember the order for `Activate(i)`.
@@ -1078,6 +1091,75 @@ async fn insert_task(sh: Arc<Shared>, em: SignalEmitter<'static>, mut session: k
     }
 }
 
+/// The keys the keep-focus variant takes through KWin while it is open: (id, KWin key sequence). The id is what the
+/// overlay gets as a key name (see `focus_key`); Ctrl variants carry a "ctrl+" prefix.
+fn focus_key_list() -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = Vec::new();
+    for c in ('a'..='z').chain('0'..='9') {
+        v.push((c.to_string(), c.to_ascii_uppercase().to_string()));
+    }
+    for (id, seq) in [("Return", "Return"), ("KP_Enter", "Enter"), ("Escape", "Esc"), ("BackSpace", "Backspace"), ("Tab", "Tab"),
+                      ("ISO_Left_Tab", "Shift+Tab"), ("Up", "Up"), ("Down", "Down"), ("Page_Up", "PgUp"), ("Page_Down", "PgDown"),
+                      ("space", "Space"), ("minus", "-"), ("period", "."), ("slash", "/")] {
+        v.push((id.into(), seq.into()));
+    }
+    for (id, seq) in [("ctrl+Return", "Ctrl+Return"), ("ctrl+space", "Ctrl+Space"), ("ctrl+n", "Ctrl+N"), ("ctrl+p", "Ctrl+P"),
+                      ("ctrl+i", "Ctrl+I"), ("ctrl+y", "Ctrl+Y")] {
+        v.push((id.into(), seq.into()));
+    }
+    for d in '1'..='9' {
+        v.push((format!("ctrl+{d}"), format!("Ctrl+{d}")));
+    }
+    v
+}
+
+/// The `Key` signal payload for a keep-focus key id (the same shape the accessibility listener produces).
+fn focus_key(id: &str) -> crate::keygrab::Key {
+    let (ctrl, name) = match id.strip_prefix("ctrl+") {
+        Some(rest) => (true, rest),
+        None => (false, id),
+    };
+    let name = match name {
+        "minus" => "-",
+        "period" => ".",
+        "slash" => "/",
+        other => other,
+    };
+    crate::keygrab::Key { name: name.to_string(), text: name.chars().count() == 1, pressed: true, ctrl, alt: false, shift: id == "ISO_Left_Tab", ..Default::default() }
+}
+
+/// Start taking the keep-focus keys through KWin (replacing any earlier grab).
+async fn begin_focus_keys(sh: &Shared, em: SignalEmitter<'static>) -> anyhow::Result<()> {
+    anyhow::ensure!(kwin::on_kde(), "keeping popups open needs KDE Plasma (keys are taken through KWin)");
+    if let Some(stop) = sh.focus_keys_stop.lock().await.take() {
+        let _ = stop.send(());
+    }
+    let list = focus_key_list();
+    let pairs: Vec<(&str, &str)> = list.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let session = kwin::grab_keys(&pairs).await?;
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    *sh.focus_keys_stop.lock().await = Some(stop_tx);
+    tokio::spawn(focus_keys_task(em, session, stop_rx));
+    Ok(())
+}
+
+/// While the keep-focus overlay is open: forward every key KWin took as a `Key` signal (the passive overlay handles it
+/// like a typed key). Esc twice (or once without double Esc) is left to the overlay, which closes; `close()` stops this.
+async fn focus_keys_task(em: SignalEmitter<'static>, mut session: kwin::Session, mut stop: tokio::sync::oneshot::Receiver<()>) {
+    loop {
+        tokio::select! {
+            _ = &mut stop => break,
+            got = session.next_data() => match got {
+                Some(id) => {
+                    let _ = Daemon::key(&em, &serde_json::to_string(&focus_key(&id)).unwrap_or_default()).await;
+                }
+                None => break,
+            }
+        }
+    }
+    session.stop().await;
+}
+
 /// The keys edit mode takes (id, KWin key sequence); Shift variants are separate shortcuts.
 const EDIT_KEYS: &[(&str, &str)] = &[
     ("h", "H"), ("j", "J"), ("k", "K"), ("l", "L"), ("H", "Shift+H"), ("J", "Shift+J"), ("K", "Shift+K"), ("L", "Shift+L"),
@@ -1193,6 +1275,9 @@ async fn edit_task(sh: Arc<Shared>, em: SignalEmitter<'static>, mut session: kwi
 /// Drop the open snapshot: give back any keys grabbed through the accessibility registry, forget the window, and emit `Closed`.
 async fn close(sh: &Shared, em: &SignalEmitter<'_>) {
     end_edit(sh).await;
+    if let Some(stop) = sh.focus_keys_stop.lock().await.take() {
+        let _ = stop.send(()); // the task unloads the KWin script: the keys are the app's again
+    }
     if sh.grabbed.swap(false, std::sync::atomic::Ordering::SeqCst) {
         crate::keygrab::release(sh.a11y.connection(), &sh.keys).await;
     }
@@ -1201,17 +1286,37 @@ async fn close(sh: &Shared, em: &SignalEmitter<'_>) {
     }
 }
 
-/// Shortcut / `Trigger()` behaviour: toggle the overlay.
+/// Shortcut / `Trigger()` behaviour: toggle the overlay. With `[behavior] keep_focus` the normal shortcut opens the
+/// keep-focus variant too.
 async fn trigger(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
+    trigger_with(sh, em, config::load().behavior.keep_focus).await
+}
+
+/// Toggle the overlay; `keep_focus` opens the variant that leaves the keyboard with the app (see `open_with`).
+async fn trigger_with(sh: &Shared, em: &SignalEmitter<'_>, keep_focus: bool) -> Value {
     if sh.snap.lock().await.is_some() {
         close(sh, em).await;
         return json!({"toggled": "closed"});
     }
-    open(sh, em).await
+    open_with(sh, em, keep_focus).await
+}
+
+/// Open normally (the overlay takes the keyboard). See `open_with`.
+async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
+    open_with(sh, em, false).await
 }
 
 /// Snapshot the focused window (plus, optionally, the list of other windows) and emit `Opened`.
-async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
+///
+/// `keep_focus` (Meta+Shift+Alt+Space, `TriggerKeepFocus()`): the overlay must not take the keyboard, so the app keeps
+/// it. Chrome closes its popups (extension popups such as MAL-Sync, the address bar dropdown, bubbles) the moment it
+/// loses the keyboard, and they can't be detected: KWin does not list them and their accessibility frames keep saying
+/// "showing" after they close (measured). So this variant is chosen by the user. It uses the passive overlay; keys are
+/// taken through KWin (`focus_keys_task`), because Chrome does not hand keys to the accessibility registry that the
+/// other passive mode reads; and the text on screen inside the window is labelled with OCR wherever no element is, which
+/// is how a popup's buttons get labels. Because the app never loses the keyboard, clicks also land without vimvibe
+/// stepping aside.
+async fn open_with(sh: &Shared, em: &SignalEmitter<'_>, keep_focus: bool) -> Value {
     end_insert(sh).await; // opening vimvibe by hand ends a typing session (Esc is the user's again)
     let t0 = Instant::now();
     let cfg = config::load(); // re-read every time: edits apply without a restart
@@ -1270,6 +1375,22 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
                 (None, None) => anyhow::bail!("no target window found (is accessibility enabled, and was the app started after enabling it?)"),
             }
         };
+        // Apps that draw their own frame and shadow report element positions relative to their surface, which starts
+        // at the shadow, not at the visible window: shift them onto KWin's window origin (Chrome, not maximised: -16,
+        // -10), or pointer clicks land that far off
+        if !popup_mode && via != "fallback" {
+            if let Some(f) = focus.as_ref() {
+                if let (Some(bx), Some(by)) = (f.bx, f.by) {
+                    let (dx, dy) = (bx - f.x, by - f.y);
+                    if (dx, dy) != (0, 0) && dx.abs() < 100 && dy.abs() < 100 {
+                        for e in els.iter_mut().filter(|e| e.rect.2 > 0 && e.rect.3 > 0) {
+                            e.rect.0 += dx;
+                            e.rect.1 += dy;
+                        }
+                    }
+                }
+            }
+        }
         // A Chromium-based app started without the accessibility flag shows no elements at all; no signal makes it
         // build them later, so say so (the UI offers a restart) instead of opening an empty overlay.
         if !popup_mode && els.is_empty() && cfg.accessibility.offer_restart {
@@ -1328,6 +1449,8 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
         }
         // An open menu closes when the overlay takes the keyboard, like Plasma's popups: use the passive overlay.
         let popup_mode = popup_mode || any_menu_open;
+        let kwin_keys = keep_focus && !popup_mode; // over Plasma popups / menus the accessibility listener works as before
+        let popup_mode = popup_mode || keep_focus;
         // Last layers before the grid: an app that gave no elements (fallback) is read off the screen with OCR, and the
         // phrases become clickable labels. They carry `Extra::Ocr` because they have no accessibility object.
         let mut via = via;
@@ -1341,6 +1464,26 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
                         via = "ocr";
                     }
                     Ok(_) => {}
+                    Err(e) => eprintln!("ocr: {e}"),
+                }
+            }
+        }
+        // keep-focus: label the text inside the window that no element covers (a Chrome popup's buttons are not in the
+        // window's accessibility tree); a phrase whose centre lies in an element's box is already labelled
+        if kwin_keys && via != "ocr" && cfg.mouse.enabled && cfg.mouse.ocr && crate::ocr::available() {
+            if let Some(g) = geometry.filter(|g| g.2 > 0) {
+                let sw = Some(cfg.mouse.screen_width).filter(|w| *w > 0);
+                match crate::ocr::read_window(g, sw, &win_app, &win_title, &cfg.ocr).await {
+                    Ok(found) => {
+                        let covered = |p: &Element| {
+                            let (cx, cy) = (p.rect.0 + p.rect.2 / 2, p.rect.1 + p.rect.3 / 2);
+                            // 6 px of slack: OCR boxes hug the glyphs, element boxes the line (measured: a link's
+                            // OCR phrase sat 1 px above its element and got a second label)
+                            els.iter().any(|e| e.rect.2 > 0 && cx >= e.rect.0 - 6 && cx < e.rect.0 + e.rect.2 + 6 && cy >= e.rect.1 - 6 && cy < e.rect.1 + e.rect.3 + 6)
+                        };
+                        let new: Vec<Element> = found.into_iter().filter(|p| !covered(p)).collect();
+                        els.extend(new);
+                    }
                     Err(e) => eprintln!("ocr: {e}"),
                 }
             }
@@ -1394,7 +1537,9 @@ async fn open(sh: &Shared, em: &SignalEmitter<'_>) -> Value {
         });
         *sh.snap.lock().await = Some(Snapshot { hints, els, last: vec![], geometry, extra, in_menu, focus: focus.clone() });
         let generation = sh.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        if popup_mode {
+        if kwin_keys {
+            begin_focus_keys(sh, em.to_owned()).await.map_err(|e| anyhow::anyhow!("could not take the keys through KWin: {e}"))?;
+        } else if popup_mode {
             match crate::keygrab::grab(sh.a11y.connection(), &sh.keys, crate::keygrab::MODE_POPUP).await {
                 Ok(()) => {
                     sh.grabbed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1433,8 +1578,9 @@ async fn register_hotkeys(conn: &zbus::Connection) -> anyhow::Result<zbus::zvari
     let call = |member: &'static str| (Some("org.kde.kglobalaccel"), "/kglobalaccel", Some("org.kde.KGlobalAccel"), member);
     let (toggle, quit, settings) = default_keys();
     let comp = component();
-    let shortcuts: [(&str, &str, Vec<i32>); 3] = [
+    let shortcuts: [(&str, &str, Vec<i32>); 4] = [
         (ACTION, "Toggle palette", toggle.to_vec()),
+        (KEEP_ACTION, "Toggle palette, keeping popups open", vec![keep_focus_key()]),
         (QUIT_ACTION, "Quit vimvibe", quit.to_vec()),
         (SETTINGS_ACTION, "Open vimvibe settings", settings),
     ];
@@ -1488,6 +1634,7 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
         scroller: Default::default(),
         edit_mode_stop: Mutex::new(None),
         insert_stop: Mutex::new(None),
+        focus_keys_stop: Mutex::new(None),
         keys: Default::default(),
     });
     let conn = zbus::connection::Builder::session()?
@@ -1604,6 +1751,8 @@ pub async fn run(a11y: AccessibilityConnection, timeout_ms: u64, enable_hotkey: 
                         } else if action == SETTINGS_ACTION {
                             close(&sh2, &em2).await;
                             let _ = Daemon::open_settings(&em2).await;
+                        } else if action == KEEP_ACTION {
+                            trigger_with(&sh2, &em2, true).await;
                         } else {
                             trigger(&sh2, &em2).await;
                         }

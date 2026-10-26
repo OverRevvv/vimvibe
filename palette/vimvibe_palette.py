@@ -30,6 +30,8 @@ window on the target's screen holds a search panel, and every element of the tar
   Ctrl+T                   text mode: the words on screen (OCR) as a Vim buffer: h j k l w b 0 $ gg G move, v / V select,
                            y copy, p paste into a text field, P paste here, f jump by label, / search; Space + J K / D U / F B scroll; Esc back
   Ctrl+Tab / Ctrl+Shift+Tab  next / previous mode (labels -> grid -> pointer movement -> text)
+  Meta+Shift+Alt+Space     open without taking the keyboard: popups (Chrome extension popups, dropdowns) stay open;
+                           keys come through KWin, the popup's text is labelled with OCR
   Ctrl+Shift+H             clipboard history (Ctrl+J / Ctrl+K or arrows move, Enter pastes)
 All of these (except the Space+H J K L scrolling family and the mouse movement keys) can be rebound in Settings → Keys ([keys] in config.toml);
 the ones above are the defaults.
@@ -377,8 +379,8 @@ class Overlay(QWidget):
             self.move_sel(-self.t.rows)
         elif name == "space":
             self.space_tapped()
-        elif name == "Escape":  # only the first of two Esc presses arrives here: the daemon closes on the second
-            self.close_pressed()
+        elif name == "Escape":  # over a popup only the first of two Esc presses arrives (the daemon closes on the second);
+            self.close_pressed()  # in the keep-focus variant both arrive and this closes on the second
         elif k.get("text") and len(name) == 1:
             self.edit.insert(name)
         if DEBUG:

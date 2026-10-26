@@ -7,6 +7,7 @@ Every key and mode, in detail. New here? Start with the [Overview](../README.md)
 | Do | Keys |
 |---|---|
 | Open / close | **Meta+Shift+Space** (**Esc Esc**, two presses, also closes) |
+| Open over a popup without closing it (Chrome extensions, dropdowns) | **Meta+Shift+Alt+Space** ([details](#popups-that-close-when-vimvibe-opens-chrome-extensions-dropdowns)) |
 | Quit vimvibe completely (daemon + overlay) | **Meta+Shift+Q** (or `vimvibe stop`) |
 | Settings | **Ctrl+Shift+,** from anywhere (**Ctrl+,** while the overlay is open) |
 | Scroll | hold **Space** + **J** (down) / **K** (up) / **H** (left) / **L** (right), or **D** / **U** — scrolls the selected element, or the window; **Shift** = faster; release Space for fresh labels ([details](#scrolling-and-arrow-keys)) |
@@ -221,6 +222,22 @@ screen.
 Copied lines keep their line breaks (or are joined with spaces: Settings → Mouse → Text mode). The text comes from OCR,
 so a misread letter is possible, and text that is not on screen (scrolled away, behind another window) is not in the
 buffer. It needs `spectacle` and `tesseract` and `[mouse] ocr` on.
+
+## Popups that close when vimvibe opens (Chrome extensions, dropdowns)
+
+Chrome closes its popups (extension popups such as MAL-Sync, the address-bar dropdown, bookmark and profile bubbles)
+the moment it loses the keyboard, which is what opening vimvibe normally does. Open vimvibe with
+**Meta+Shift+Alt+Space** instead: it never takes the keyboard, so the popup stays open.
+
+- Keys are taken through KWin while it is open, so nothing you type reaches the page or the popup.
+- The popup's text is read with OCR and labelled (Chrome's popups are not in the window's accessibility tree); the
+  rest of the window has its usual labels. Type a label, **Enter** clicks.
+- Because the app keeps the keyboard, clicks land directly.
+- Not available in this variant: holding Space to scroll, text mode and the mouse modes (KWin reports key presses but
+  not releases). Esc twice closes it.
+
+To use it always, tick *Labels & behaviour → Popups: Always keep popups open* (`[behavior] keep_focus = true`).
+The shortcut can be changed in System Settings → Shortcuts → vimvibe ("Toggle palette, keeping popups open").
 
 ## Switching modes
 
