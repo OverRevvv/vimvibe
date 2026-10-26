@@ -1,5 +1,6 @@
-# vimvibe RPM: repackages the release tarball (compiled core + Python overlay), so building needs no Rust.
-# Build with packaging/make-rpm.sh (Fedora container) or: rpmbuild -bb --define "_sourcedir <dir with the tarball>" vimvibe.spec
+# vimvibe RPM (Fedora and openSUSE): repackages the release tarball (static core + Python overlay), so building needs
+# no Rust. Build with packaging/make-rpm.sh [fedora|opensuse] (in a container of that distro) or:
+#   rpmbuild -bb --define "_sourcedir <dir with the tarball>" vimvibe.spec
 %global debug_package %{nil}
 %global __strip /bin/true
 
@@ -12,13 +13,23 @@ URL:            https://github.com/OverRevvv/vimvibe
 Source0:        vimvibe-%{version}-linux-x86_64.tar.gz
 ExclusiveArch:  x86_64
 
+# Dependency names differ per distro (checked on Fedora 44 and openSUSE Tumbleweed, see docs/packaging.md).
+# python3-pyside6 is provided on both (openSUSE's python313-pyside6 provides it).
 Requires:       python3-pyside6
+%if 0%{?suse_version}
+Requires:       libLayerShellQtInterface6
+Requires:       glib2-tools
+Recommends:     spectacle
+Recommends:     tesseract-ocr
+Recommends:     tesseract-ocr-traineddata-english
+%else
 Requires:       layer-shell-qt
 Requires:       glib2
-Requires:       systemd
-# OCR labels for apps that expose nothing to accessibility
+# OCR labels and text mode
 Recommends:     spectacle
 Recommends:     tesseract
+Recommends:     tesseract-langpack-eng
+%endif
 
 %description
 vimvibe labels every button, tab, link and menu item of the focused window; type a few letters of its name and
@@ -32,16 +43,10 @@ Vimium, and OCR and grid fallbacks for apps without an accessibility tree.
 # nothing to build: the tarball ships the compiled core
 
 %install
-install -Dm755 vimvibe-core %{buildroot}%{_bindir}/vimvibe-core
-# the launcher template carries @CORE@ / @PALETTE_DIR@ placeholders for where the files ended up
-sed -e 's|@CORE@|%{_bindir}/vimvibe-core|' -e 's|@PALETTE_DIR@|%{_datadir}/vimvibe|' packaging/vimvibe > vimvibe.launcher
-install -Dm755 vimvibe.launcher %{buildroot}%{_bindir}/vimvibe
-for f in palette/vimvibe_*.py; do install -Dm644 "$f" %{buildroot}%{_datadir}/vimvibe/$(basename "$f"); done
-install -Dm644 packaging/icons/vimvibe.svg %{buildroot}%{_datadir}/vimvibe/vimvibe.svg
-mkdir -p %{buildroot}%{_datadir}/icons
-cp -r packaging/icons/hicolor %{buildroot}%{_datadir}/icons/
-printf '[Desktop Entry]\nType=Application\nName=vimvibe Settings\nComment=Click anything by typing its name\nExec=vimvibe settings\nIcon=vimvibe\nCategories=Utility;Accessibility;\n' > vimvibe.desktop
-install -Dm644 vimvibe.desktop %{buildroot}%{_datadir}/applications/vimvibe.desktop
+# the same layout as every other package (packaging/stage.sh, shipped in the tarball)
+./packaging/stage.sh . %{buildroot} %{_prefix}
+# the RPM tags the docs and licence itself (%doc / %license below)
+rm -rf %{buildroot}%{_datadir}/doc/vimvibe %{buildroot}%{_datadir}/licenses/vimvibe
 
 %files
 %doc README.md

@@ -1,0 +1,25 @@
+# Arch Linux package (AUR: vimvibe-bin). Built from the release tarball, which ships a static core, so nothing is
+# compiled here. To publish a new version: set pkgver, run `updpkgsums` (or packaging/arch/make-arch.sh, which also
+# test-builds it in an Arch container), commit PKGBUILD and .SRCINFO to the AUR repository.
+# Maintainer: OverRevvv <rdude1612@gmail.com>
+pkgname=vimvibe-bin
+pkgver=3.1.1
+pkgrel=1
+pkgdesc="Keyboard-driven 'click anything by typing its name' overlay for KDE Plasma (Wayland), like Shortcat and Vimium"
+arch=('x86_64')
+url="https://github.com/OverRevvv/vimvibe"
+license=('MIT')
+depends=('python' 'pyside6' 'layer-shell-qt' 'glib2')
+optdepends=('spectacle: OCR labels and text mode (screenshots)'
+            'tesseract: OCR labels and text mode'
+            'tesseract-data-eng: English text for OCR')
+provides=('vimvibe')
+conflicts=('vimvibe')
+options=('!strip' '!debug')
+source=("$url/releases/download/v$pkgver/vimvibe-$pkgver-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir/vimvibe-$pkgver-linux-x86_64"
+  ./packaging/stage.sh . "$pkgdir" /usr
+}
