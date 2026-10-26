@@ -119,7 +119,7 @@ is divided again; keep going as deep as you like (4 times by default). Then:
 
 | Key | Does |
 |---|---|
-| **Enter** | click the middle of the current cell (**Ctrl+Enter** right, **Enter Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
+| **Enter** | click the middle of the current cell (vimvibe steps off screen for that instant, about 50 ms, so the click reaches the app whatever KWin's window actions are) (**Ctrl+Enter** right, **Enter Enter** double, **Ctrl+Alt+Enter** or **Shift+Enter** middle click). The mode stays open for the next click: leave it with **Esc Esc** or **Meta+Shift+Space** (`stay_after_click`) |
 | **Space** | only move the pointer there, no click |
 | **Backspace** | zoom out one step (or drop a half-typed cell name) |
 | **Ctrl+Shift+G** | switch between the window and the whole screen |

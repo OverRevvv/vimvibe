@@ -94,6 +94,7 @@ you want Space + H/J/K/L arrow keys).
 | Do | Keys |
 |---|---|
 | Open / close | **Meta+Shift+Space** (**Esc Esc** also closes) |
+| Open over a popup without closing it (Chrome extensions, dropdowns) | **Meta+Shift+Alt+Space** |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
 | Right / double / middle click | **Ctrl+Enter** / **Enter twice** / **Shift+Enter** |
 | Scroll | hold **Space** + **J K H L** (or **D** / **U**) |
