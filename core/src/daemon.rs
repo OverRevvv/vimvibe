@@ -383,6 +383,7 @@ impl Daemon {
             }
             if let Some(b) = button {
                 tokio::time::sleep(Duration::from_millis(40)).await; // the target window is regaining focus
+                activate_under_pointer(x, y, here).await;
                 p.press(b, count).await?;
             }
             anyhow::Ok(())
@@ -794,6 +795,21 @@ async fn pointer_guard(sh: &Shared) -> anyhow::Result<tokio::sync::MutexGuard<'_
 }
 
 /// Pointer rung: click (or hover) at the element's centre through the RemoteDesktop portal.
+/// Before a click: activate the window under the point (the pointer's position when `here`), so the click reaches the
+/// app even when KWin is set to only activate an inactive window on a click (see `kwin::activate_at`). Best effort:
+/// without KWin the click is sent as before.
+async fn activate_under_pointer(x: f64, y: f64, here: bool) {
+    if !kwin::on_kde() {
+        return;
+    }
+    let point = if here { kwin::cursor_pos(Duration::from_millis(300)).await } else { Some((x, y)) };
+    if let Some((px, py)) = point {
+        if let Ok(true) = kwin::activate_at(px, py, Duration::from_millis(300)).await {
+            tokio::time::sleep(Duration::from_millis(30)).await; // let the app see the activation before the press
+        }
+    }
+}
+
 async fn pointer_action(sh: &Shared, el: &Element, geometry: Option<(i32, i32, i32, i32)>, act: Act) -> anyhow::Result<String> {
     use crate::pointer::Button;
     let (ox, oy) = geometry.map(|(x, y, _, _)| (x, y)).ok_or_else(|| anyhow::anyhow!("the window's screen position is unknown"))?;
@@ -815,6 +831,7 @@ async fn pointer_action(sh: &Shared, el: &Element, geometry: Option<(i32, i32, i
             // a right click opens a menu where the pointer is, so it must stay there; plain clicks restore it
             // (and so must the pointer when the click opens a popup: moving away would close a hover-driven one)
             let restore = matches!(act, Act::Click | Act::Double | Act::Middle) && !matches!(el.role.as_str(), "ComboBox" | "PushButtonMenu" | "Menu");
+            activate_under_pointer(cx, cy, false).await; // the click must not be used up activating the window
             p.click_at(cx, cy, button, count, restore).await.map(|_| format!("{what} at ({cx:.0}, {cy:.0}) through the portal"))
         }
     };

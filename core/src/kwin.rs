@@ -338,6 +338,32 @@ pub async fn activate_window(id: &str, timeout: Duration) -> anyhow::Result<()> 
     Ok(())
 }
 
+const ACTIVATE_AT: &str = r#"
+let hit = null;
+for (const w of workspace.stackingOrder) {  // bottom to top: the last window containing the point is the visible one
+  if (w.minimized || w.hidden || w.dock || w.desktopWindow || !(w.normalWindow || w.dialog)) continue;
+  if (w.desktops && w.desktops.length && !w.desktops.includes(workspace.currentDesktop)) continue;
+  const g = w.frameGeometry;
+  if (@X@ >= g.x && @X@ < g.x + g.width && @Y@ >= g.y && @Y@ < g.y + g.height) hit = w;
+}
+let was = hit !== null && hit === workspace.activeWindow;
+if (hit !== null && !was) workspace.activeWindow = hit;
+callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Data", JSON.stringify({found: hit !== null, activated: hit !== null && !was}));
+"#;
+
+/// Make the window under screen point (x, y) the active one before a click is sent there. KWin's "left click on an
+/// inactive window" action can be "Activate and raise", which does not pass the click on: a click into a window that
+/// is not the active one would only activate it. Returns whether a window had to be activated. (A click into the
+/// active window while vimvibe's overlay holds the keyboard is a separate case: the overlay steps aside for it, see
+/// `mouse_commit` in the overlay.)
+pub async fn activate_at(x: f64, y: f64, timeout: Duration) -> anyhow::Result<bool> {
+    anyhow::ensure!(x.is_finite() && y.is_finite(), "bad point");
+    let script = ACTIVATE_AT.replace("@X@", &format!("{x:.1}")).replace("@Y@", &format!("{y:.1}"));
+    let got = one_shot_data(&script, timeout).await.ok_or_else(|| anyhow::anyhow!("KWin did not answer"))?;
+    let v: serde_json::Value = serde_json::from_str(&got)?;
+    Ok(v["activated"].as_bool() == Some(true))
+}
+
 const WINDOW_OP: &str = r#"
 let found = false;
 for (const w of workspace.windowList()) {

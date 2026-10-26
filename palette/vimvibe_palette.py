@@ -185,7 +185,7 @@ class Overlay(QWidget):
         self.flash = ""           # a short message drawn over the overlay for FLASH_MS
         self.flash_timer = QTimer(self, singleShot=True, timeout=self.clear_flash)
         self.clip = None          # the clipboard history picker while open: {"all": entries, "filter": str, "sel": int, "top": int}
-        self.last_regrab = 0.0    # time of the last keyboard take-back (see regrab_keyboard)
+        self.regrabs = []         # times of recent keyboard take-backs (see regrab_keyboard): bounds a tug of war
         self.resume_mouse = None  # "grid" / "move": the mouse mode to re-enter when the overlay reopens after arrow keys
         self.mspace_down = self.mspace_used = False  # mouse modes: Space held (a scroll chord) and whether it was used
         self.edit_visual = False  # edit mode: arrows select text (V toggles it)
@@ -691,7 +691,7 @@ class Overlay(QWidget):
             return False
         self.scrolling = True
         self.labels_on = False  # positions go stale as the content moves; new labels come after Space is released
-        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.pass_input(True)
         self.update()
         return True
 
@@ -703,7 +703,7 @@ class Overlay(QWidget):
         self.scrolling = False
         self.daemon.asyncCall("ScrollEnd")
         if self.windowHandle():
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.pass_input(False)
             # the wheel events activated the app below: take the keyboard back now, so the next Space + J works too
             QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))
         if refresh:
@@ -840,7 +840,7 @@ class Overlay(QWidget):
         self.mouse = "move"
         write_state(mode="move")
         self.held, self.move_rem = [], [0.0, 0.0]
-        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.pass_input(True)
         self.update()
 
     def stop_move(self):
@@ -862,7 +862,7 @@ class Overlay(QWidget):
         self.stop_move()
         self.mouse, self.grid = None, None
         if self.windowHandle():
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.pass_input(False)
         self.update()
 
     # --- clipboard: copy / paste keys, text selection with the pointer, the history picker ---------------------
@@ -924,7 +924,7 @@ class Overlay(QWidget):
         self.grid, self.mouse, self.edit_visual = None, "edit", False
         self.edit.hide()
         self.show()
-        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.pass_input(True)
         self.update()
 
     def edit_visual_changed(self, visual):
@@ -996,21 +996,38 @@ class Overlay(QWidget):
         else:
             where = (0.0, 0.0, True)
         if self.cfg["mouse"].get("stay_after_click", True):
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)  # the click must reach the app, not this window
-            QTimer.singleShot(50, lambda: self.mouse_stay_done(self.call("PointerAct", *where, "stay:" + action)))
+            # The overlay must be off screen for the instant of the click. While it holds the keyboard, KWin treats a
+            # click into the window below as "activate it" and, with the window action "Activate and raise" (not "...
+            # and pass click"), the app never sees the press (measured: no press reached a Qt button or a Chrome link,
+            # with the overlay input-transparent, masked, or not holding the keyboard exclusively). Unmapped, the
+            # keyboard is back with the app, the click passes, and showing the overlay again takes the keyboard back.
+            # Costs a blink of about 50 ms.
+            self.stop_move()
+            self.hide()
+            QTimer.singleShot(30, lambda: self.mouse_stay_done(self.call("PointerAct", *where, "stay:" + action)))
             return
         self.leave_mouse()
         self.hide()
         QTimer.singleShot(60, lambda: self.mouse_done(self.call("PointerAct", *where, action)))
 
     def mouse_stay_done(self, res):
-        """The click of a mouse mode that stays open went out: report errors; the grid starts over from the whole
-        region for the next target (the movement mode just continues). The app was activated by the click, which the
-        deactivation handler answers by taking the keyboard back."""
+        """The click of a mouse mode that stays open went out: report errors, show the overlay again (it takes the
+        keyboard back as it maps), and start the grid over from the whole region for the next target (the movement
+        mode just continues, still letting the pointer through)."""
         self.mouse_done(res)
+        if self.mouse is None:  # closed meanwhile (the shortcut, Esc Esc)
+            return
         if self.mouse == "grid":
             self.enter_grid()
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.pass_input(False)
+        self.show() if (self.passive or self.layered) else self.showFullScreen()
+        if self.windowHandle():
+            self.windowHandle().requestActivate()
+        self.activateWindow()
+        self.edit.setFocus()
+        if self.mouse == "move":
+            self.pass_input(True)
+        QTimer.singleShot(150, self.regrab_keyboard)  # in case the app took the keyboard after the click
 
     def event(self, ev):
         """Losing the keyboard while the overlay is on screen (a click from a mouse mode, or the wheel events of a
@@ -1023,23 +1040,49 @@ class Overlay(QWidget):
             QTimer.singleShot(80, self.regrab_keyboard)
         return super().event(ev)
 
+    def pass_input(self, on):
+        """Let pointer input through to the app below (`on`) or take it again. A frame is drawn right away so the new
+        input region reaches the compositor before the next scroll or click is sent."""
+        if self.windowHandle() is None:
+            return
+        self.windowHandle().setFlag(Qt.WindowTransparentForInput, bool(on))
+        if self.isVisible():
+            self.repaint()
+
     def keeps_keyboard(self):
         """True when the overlay is supposed to hold the keyboard right now."""
         return (self.isVisible() and not self.passive and not self.scrolling and not self.arrowing
                 and not self.dialog_open)
 
-    def regrab_keyboard(self, force=False):
-        """Take the keyboard back by asking to be activated again, with no hiding or flicker. Rate-limited to once a
-        second (never loop if the compositor won't give it back) unless `force` (the end of a scroll, which is known to
-        have moved the focus)."""
-        now = time.monotonic()
-        if not force and now - self.last_regrab < 1.0:
+    def regrab_keyboard(self, force=False, attempt=0):
+        """Take the keyboard back, and check that it worked. Asking to be activated again (no flicker) is enough in
+        most apps, but a web app that grabs focus after a click (measured: Mega in Chrome) can win that race, and then
+        every key goes to the page. So: ask, check again shortly, ask once more, and as a last resort hide and re-show
+        the overlay (a newly mapped exclusive layer surface always gets the keyboard; one frame of flicker, only when
+        the quiet way failed). A tug of war with an app that keeps taking focus is cut off after 8 take-backs in
+        4 seconds. `force` is kept for callers that know the focus moved (the end of a scroll)."""
+        if not self.keeps_keyboard() or self.isActiveWindow():
             return
-        if self.keeps_keyboard() and not self.isActiveWindow():
-            self.last_regrab = now
-            self.windowHandle().requestActivate()  # asking again is enough: the overlay never leaves the screen
+        now = time.monotonic()
+        if attempt == 0:
+            self.regrabs = [t for t in self.regrabs if now - t < 4.0] + [now]
+            if len(self.regrabs) > 8:
+                print("keyboard: the app keeps taking focus; not taking it back again", file=sys.stderr, flush=True)
+                return
+        if attempt < 2:
+            self.windowHandle().requestActivate()  # asking again is usually enough: the overlay never left the screen
             self.activateWindow()
             self.edit.setFocus()
+        elif attempt == 2:
+            self.hide()  # remap: the compositor gives a newly shown exclusive layer surface the keyboard
+            self.show() if (self.passive or self.layered) else self.showFullScreen()
+            self.windowHandle().requestActivate()
+            self.activateWindow()
+            self.edit.setFocus()
+        else:
+            print("keyboard: could not take it back from the app", file=sys.stderr, flush=True)
+            return
+        QTimer.singleShot(150 if attempt == 0 else 250, lambda: self.regrab_keyboard(attempt=attempt + 1))
 
     # --- modes: switching, and text mode (the screen as a Vim buffer) ------------------------------------------
     def current_mode(self):
@@ -1127,7 +1170,7 @@ class Overlay(QWidget):
         words = [dict(w, x=w["x"] - ox, y=w["y"] - oy) for w in data.get("words", [])]
         prev, replay = self.text.get("prev"), self.text.get("replay")
         if self.windowHandle():
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.pass_input(False)
             QTimer.singleShot(30, lambda: self.regrab_keyboard(force=True))  # the scroll may have activated the app
         if prev is None:  # the first reading: a new document, caret on the first word of the target window
             buf = self.text_buffer(Document(words))
@@ -1247,12 +1290,12 @@ class Overlay(QWidget):
             state["revealing"] = self.text.get("revealing", 0)
         self.text = state
         self.flash = ""; self.flash_timer.stop()
-        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.pass_input(True)
         self.update()
         res = self.call("PointerScroll", 0, round(notches * 10), x, y, False)
         if not res or not res.get("ok"):
             self.text = {"state": "ready", "buf": buf}
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.pass_input(False)
             self.show_flash("Can't scroll: " + (res or {}).get("error", "the daemon did not answer"))
             return
         QTimer.singleShot(120, self.text_capture_now)  # the daemon waits for the glide to end before the screenshot
@@ -1262,7 +1305,7 @@ class Overlay(QWidget):
         if self.text is None:
             return
         if self.windowHandle():
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)  # a scroll may have let input through
+            self.pass_input(False)  # a scroll may have let input through
         self.text = None
         self.place_panel()
         self.sync_field()
@@ -1466,7 +1509,7 @@ class Overlay(QWidget):
         else:
             where = (0.0, 0.0, True)
         # click-through first: the wheel events must not find this window under the pointer (the grid takes input)
-        self.windowHandle().setFlag(Qt.WindowTransparentForInput, True)
+        self.pass_input(True)
         res = self.call("PointerScroll", direction[0] * step, direction[1] * step, *where)
         if not res or not res.get("ok"):
             notify("vimvibe can't scroll here", (res or {}).get("error", "the daemon did not answer"))
@@ -1478,7 +1521,7 @@ class Overlay(QWidget):
     def mouse_scroll_done(self):
         """The glide is over: the grid takes pointer input again (the movement mode never gives it up)."""
         if self.mouse != "move" and self.windowHandle():
-            self.windowHandle().setFlag(Qt.WindowTransparentForInput, False)
+            self.pass_input(False)
 
     def mouse_event(self, ev):
         """A key event while the grid or pointer movement is active. Everything is consumed here, so nothing leaks into
