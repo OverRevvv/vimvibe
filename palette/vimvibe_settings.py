@@ -327,6 +327,11 @@ class SettingsWindow(QWidget):
         f.addRow("Tap Enter twice within:", self.double_tap)
         self.insert_after = QCheckBox("After a text field is clicked, let me type in it and come back with Esc")
         f.addRow("Text fields:", self.insert_after)
+        self.keep_focus = QCheckBox("Always keep popups open: never take the keyboard from the app (like Meta+Shift+Alt+Space)")
+        self.keep_focus.setToolTip("Chrome closes extension popups, the address bar dropdown and its bubbles when it loses the keyboard.\n"
+                                   "With this on, vimvibe takes its keys through KWin instead and reads the popup's text with OCR.\n"
+                                   "Not available then: holding Space to scroll, text mode, the mouse modes.")
+        f.addRow("Popups:", self.keep_focus)
         self.click_with = QComboBox()
         self.click_with.addItem("A real click, like a mouse (needs the pointer permission)", "pointer")
         self.click_with.addItem("The app's own action first (no pointer move)", "semantic")
@@ -693,6 +698,7 @@ class SettingsWindow(QWidget):
         self.double_tap.setValue(int(beh.get("double_tap_ms", 250)))
         self.click_with.setCurrentIndex(max(0, self.click_with.findData(beh.get("click_with", "pointer"))))
         self.insert_after.setChecked(bool(beh.get("insert_after_field", True)))
+        self.keep_focus.setChecked(bool(beh.get("keep_focus", False)))
         self.scroll_keys.setCurrentIndex(max(0, self.scroll_keys.findData(scroll.get("keys", "hjkl"))))
         self.hjkl_action.setCurrentIndex(max(0, self.hjkl_action.findData(scroll.get("hjkl", "scroll"))))
         self.scroll_step.setValue(float(scroll.get("distance", 1.0)))
@@ -764,7 +770,8 @@ class SettingsWindow(QWidget):
         cfg["hints"].update(delay_ms=max(0, delay), after_input=delay < 0, auto_activate=self.auto.isChecked())
         cfg["behavior"].update(continuous=self.continuous.isChecked(), continuous_delay_ms=self.cdelay.value(),
                                double_esc_close=self.double_esc.isChecked(), double_tap_ms=self.double_tap.value(),
-                               click_with=self.click_with.currentData(), insert_after_field=self.insert_after.isChecked())
+                               click_with=self.click_with.currentData(), insert_after_field=self.insert_after.isChecked(),
+                               keep_focus=self.keep_focus.isChecked())
         cfg["scroll"].update(keys=self.scroll_keys.currentData(), hjkl=self.hjkl_action.currentData(), distance=round(self.scroll_step.value(), 1),
                              fast=self.scroll_fast.value(), smooth=self.scroll_smooth.isChecked(), smooth_ms=self.scroll_smooth_ms.value(),
                              edge_keys=self.edge_keys.isChecked(), edge_notches=float(self.edge_notches.value()), edge_ms=self.edge_ms.value(),

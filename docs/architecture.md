@@ -106,6 +106,28 @@ the old order (no pointer movement at all).
 **relative with a closed loop**: read the real cursor from KWin, send the difference, read again, until within a pixel.
 That is robust to pointer acceleration and scaling.
 
+## Clicking through KWin's window actions
+
+KWin's "left click on an inactive window" action can be *Activate and raise*, which does not pass the click on. While
+vimvibe's overlay holds the keyboard, KWin treats a click into the window below that way, so the app never got the
+press (measured in a Qt window and in Chrome, with the overlay input-transparent, masked, or not exclusive). So:
+mouse-mode clicks take the overlay off screen for the instant of the click (about 50 ms) and it comes back with the
+keyboard; the daemon also activates the window under a click point first (`kwin::activate_at`), for clicks into a
+window other than the active one; and after a click the overlay checks that it really got the keyboard back, retries,
+and as a last resort re-shows itself (`regrab_keyboard`), because a page that grabs focus (Mega) can win the first try.
+
+Apps that draw their own frame and shadow (Chrome, GTK) report element positions relative to their surface, which starts
+at the shadow: KWin's `bufferGeometry` gives that origin, and the elements are shifted onto the visible window (Chrome
+not maximised: 16 px left, 10 px up), so pointer clicks land on the element.
+
+## Keep-focus variant (popups)
+
+**Meta+Shift+Alt+Space** (`TriggerKeepFocus()`, or `[behavior] keep_focus`) opens the passive overlay so the app keeps
+the keyboard: Chrome's popups close on focus loss and cannot be detected (KWin does not list them; their accessibility
+frames keep saying "showing" after closing — measured). Keys are taken as KWin global shortcuts (`focus_keys_task`,
+the same mechanism as insert mode; Chrome does not hand keys to the accessibility registry), forwarded as `Key` signals;
+OCR labels the text inside the window that no element covers, which is how a popup's buttons get labels.
+
 ## Keys, and never leaking them
 
 - **Normal overlay:** a full-screen **layer-shell** surface on the Overlay layer with exclusive keyboard

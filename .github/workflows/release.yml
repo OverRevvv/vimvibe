@@ -1,4 +1,10 @@
-# On a version tag (v*): build the release tarball and attach it to a GitHub release.
+# On a version tag (v*): build every package from one static core and publish them on a GitHub release.
+#   vimvibe-<v>-linux-x86_64.tar.gz      any distro (./install.sh inside; no Rust needed)
+#   vimvibe_<v>_amd64.deb                 Debian 13+, Ubuntu / Kubuntu 25.10+
+#   vimvibe-<v>-1.fcNN.x86_64.rpm         Fedora
+#   vimvibe-<v>-1.opensuse.x86_64.rpm     openSUSE Tumbleweed
+#   vimvibe-bin-<v>-1-x86_64.pkg.tar.zst  Arch (pacman -U); aur-PKGBUILD + aur-SRCINFO for the AUR
+#   SHA256SUMS                            checksums of all of them
 name: release
 on:
   push:
@@ -6,15 +12,38 @@ on:
 permissions:
   contents: write
 jobs:
-  tarball:
+  packages:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build the tarball
+      - name: Rust with the musl target (a static core runs on every distro)
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - name: Tarball
         run: bash packaging/make-tarball.sh
+      - name: Debian / Ubuntu package
+        run: bash packaging/deb/make-deb.sh
+      - name: Fedora and openSUSE packages
+        run: |
+          bash packaging/make-rpm.sh fedora
+          bash packaging/make-rpm.sh opensuse
+      - name: Arch package and AUR files
+        run: |
+          bash packaging/arch/make-arch.sh
+          cp dist/aur/PKGBUILD dist/aur-PKGBUILD
+          cp dist/aur/.SRCINFO dist/aur-SRCINFO
+      - name: Checksums
+        run: cd dist && sha256sum *.tar.gz *.deb *.rpm *.pkg.tar.zst > SHA256SUMS
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
-            dist/*.sha256
+            dist/*.tar.gz.sha256
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/aur-PKGBUILD
+            dist/aur-SRCINFO
+            dist/SHA256SUMS

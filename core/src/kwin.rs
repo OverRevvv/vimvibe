@@ -40,6 +40,13 @@ pub struct FocusInfo {
     pub fh: i32,
     #[serde(default)]
     pub ops: String,
+    /// `bufferGeometry` origin: where the app's surface starts. A window that draws its own frame and shadow (Chrome,
+    /// GTK apps) reports its accessibility positions relative to that, not to the visible window (measured: 16 px left,
+    /// 10 px up for a Chrome window that is not maximised). None from an older KWin script.
+    #[serde(default)]
+    pub bx: Option<i32>,
+    #[serde(default)]
+    pub by: Option<i32>,
 }
 
 struct Bridge {
@@ -70,6 +77,7 @@ if (w) {
   callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Report",
     JSON.stringify({pid: w.pid, class: w.resourceClass, caption: w.caption, x: Math.round(g.x), y: Math.round(g.y), w: Math.round(g.width), h: Math.round(g.height),
       id: w.internalId.toString(), fx: Math.round(w.frameGeometry.x), fy: Math.round(w.frameGeometry.y), fw: Math.round(w.frameGeometry.width), fh: Math.round(w.frameGeometry.height),
+      bx: Math.round(w.bufferGeometry.x), by: Math.round(w.bufferGeometry.y),
       ops: (w.closeable ? "X" : "") + (w.maximizable ? "A" : "") + (w.minimizable ? "I" : "") + (w.noBorder ? "" : "D")}));
 }
 "#;
@@ -82,6 +90,7 @@ function report(w) {
   callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Report",
     JSON.stringify({pid: w.pid, class: w.resourceClass, caption: w.caption, x: Math.round(g.x), y: Math.round(g.y), w: Math.round(g.width), h: Math.round(g.height),
       id: w.internalId.toString(), fx: Math.round(w.frameGeometry.x), fy: Math.round(w.frameGeometry.y), fw: Math.round(w.frameGeometry.width), fh: Math.round(w.frameGeometry.height),
+      bx: Math.round(w.bufferGeometry.x), by: Math.round(w.bufferGeometry.y),
       ops: (w.closeable ? "X" : "") + (w.maximizable ? "A" : "") + (w.minimizable ? "I" : "") + (w.noBorder ? "" : "D")}));
 }
 function hook(w) {
@@ -336,6 +345,32 @@ pub async fn activate_window(id: &str, timeout: Duration) -> anyhow::Result<()> 
     let v: serde_json::Value = serde_json::from_str(&got)?;
     anyhow::ensure!(v["found"].as_bool() == Some(true), "that window is gone");
     Ok(())
+}
+
+const ACTIVATE_AT: &str = r#"
+let hit = null;
+for (const w of workspace.stackingOrder) {  // bottom to top: the last window containing the point is the visible one
+  if (w.minimized || w.hidden || w.dock || w.desktopWindow || !(w.normalWindow || w.dialog)) continue;
+  if (w.desktops && w.desktops.length && !w.desktops.includes(workspace.currentDesktop)) continue;
+  const g = w.frameGeometry;
+  if (@X@ >= g.x && @X@ < g.x + g.width && @Y@ >= g.y && @Y@ < g.y + g.height) hit = w;
+}
+let was = hit !== null && hit === workspace.activeWindow;
+if (hit !== null && !was) workspace.activeWindow = hit;
+callDBus("@BRIDGE@", "/", "org.vimvibe.Bridge", "Data", JSON.stringify({found: hit !== null, activated: hit !== null && !was}));
+"#;
+
+/// Make the window under screen point (x, y) the active one before a click is sent there. KWin's "left click on an
+/// inactive window" action can be "Activate and raise", which does not pass the click on: a click into a window that
+/// is not the active one would only activate it. Returns whether a window had to be activated. (A click into the
+/// active window while vimvibe's overlay holds the keyboard is a separate case: the overlay steps aside for it, see
+/// `mouse_commit` in the overlay.)
+pub async fn activate_at(x: f64, y: f64, timeout: Duration) -> anyhow::Result<bool> {
+    anyhow::ensure!(x.is_finite() && y.is_finite(), "bad point");
+    let script = ACTIVATE_AT.replace("@X@", &format!("{x:.1}")).replace("@Y@", &format!("{y:.1}"));
+    let got = one_shot_data(&script, timeout).await.ok_or_else(|| anyhow::anyhow!("KWin did not answer"))?;
+    let v: serde_json::Value = serde_json::from_str(&got)?;
+    Ok(v["activated"].as_bool() == Some(true))
 }
 
 const WINDOW_OP: &str = r#"

@@ -46,7 +46,7 @@ pub const KC_K: u32 = 45;
 pub const KC_L: u32 = 46;
 pub const KC_SPACE: u32 = 65;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Key {
     /// Key name as the toolkit reports it: "a", "A", "Return", "Escape", "BackSpace", "Down", "space", ...
     pub name: String,

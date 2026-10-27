@@ -24,11 +24,22 @@ fi
 PREBUILT=""
 [ -x ./vimvibe-core ] && PREBUILT=./vimvibe-core
 
+# What to install, by distro family (/etc/os-release ID and ID_LIKE); the names are checked in docs/packaging.md
+distro="$( . /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}" )"
+case " $distro " in
+  *" fedora "*)             need="sudo dnf install python3-pyside6 layer-shell-qt glib2 spectacle tesseract" ; rust="sudo dnf install cargo" ;;
+  *" suse "*|*" opensuse"*) need="sudo zypper install python3-pyside6 libLayerShellQtInterface6 glib2-tools spectacle tesseract-ocr" ; rust="sudo zypper install cargo" ;;
+  *" arch "*)               need="sudo pacman -S pyside6 layer-shell-qt glib2 spectacle tesseract tesseract-data-eng" ; rust="sudo pacman -S rust" ;;
+  *" debian "*|*" ubuntu "*) need="sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtdbus liblayershellqtinterface6 libglib2.0-bin kde-spectacle tesseract-ocr" ; rust="sudo apt install cargo" ;;
+  *)                        need="install PySide6, layer-shell-qt, gdbus (glib2), spectacle and tesseract from your distro" ; rust="https://rustup.rs" ;;
+esac
 missing=0
-[ -n "$PREBUILT" ] || command -v cargo >/dev/null || { echo "missing: Rust (cargo). Install from https://rustup.rs or: sudo dnf install cargo"; missing=1; }
-python3 -c "import PySide6" 2>/dev/null || { echo "missing: PySide6. Fedora: sudo dnf install python3-pyside6   (others: pip install --user PySide6)"; missing=1; }
-command -v gdbus >/dev/null || { echo "missing: gdbus (glib2). Fedora: sudo dnf install glib2"; missing=1; }
-[ "$missing" = 0 ] || exit 1
+[ -n "$PREBUILT" ] || command -v cargo >/dev/null || { echo "missing: Rust (cargo): $rust   (or use a release package / tarball: no Rust needed)"; missing=1; }
+python3 -c "import PySide6.QtWidgets, PySide6.QtDBus" 2>/dev/null || { echo "missing: PySide6"; missing=1; }
+command -v gdbus >/dev/null || { echo "missing: gdbus (glib2)"; missing=1; }
+[ "$missing" = 0 ] || { echo "install with: $need"; exit 1; }
+python3 -c 'import ctypes; ctypes.CDLL("libLayerShellQtInterface.so.6")' 2>/dev/null \
+  || echo "note: layer-shell-qt (Qt 6) is not installed: vimvibe works, but popups close when it opens. Install with: $need"
 
 # upgrade in place: stop a running installed copy first (the development copy, if any, is a different profile and is
 # left alone), and start it again afterwards

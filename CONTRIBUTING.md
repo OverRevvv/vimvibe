@@ -237,24 +237,34 @@ Do not move a published tag. A fix after a release is a new patch version.
 
 ### 6. Packages
 
+The tag builds all of these on GitHub. To build them locally (podman or docker needed; the core is built statically in a
+`rust:1-alpine` container unless the musl target is installed):
+
 ```bash
-packaging/make-tarball.sh           # dist/vimvibe-X.Y.Z-linux-x86_64.tar.gz (+ .sha256): compiled core, overlay,
-                                    # installer, icons, README, LICENSE; users need no Rust
-packaging/make-rpm.sh               # dist/vimvibe-X.Y.Z-1.fcNN.x86_64.rpm, built in a fedora:latest container
-                                    # from the tarball (run make-tarball.sh first); no rpmbuild needed on the host
+packaging/make-tarball.sh             # dist/vimvibe-X.Y.Z-linux-x86_64.tar.gz: static core, overlay, installer, stage.sh
+packaging/deb/make-deb.sh             # dist/vimvibe_X.Y.Z_amd64.deb (Debian 13+, Ubuntu 25.10+)
+packaging/make-rpm.sh fedora          # dist/vimvibe-X.Y.Z-1.fcNN.x86_64.rpm
+packaging/make-rpm.sh opensuse        # dist/vimvibe-X.Y.Z-1.opensuse.x86_64.rpm
+packaging/arch/make-arch.sh           # dist/vimvibe-bin-X.Y.Z-1-x86_64.pkg.tar.zst + dist/aur/PKGBUILD, .SRCINFO
 ```
 
-Verify them the way the releases were verified:
+All of them install the same files through `packaging/stage.sh`. Check each in a clean container of its distro (the
+commands are in [docs/packaging.md](docs/packaging.md) → *How the packages are checked*), for example:
 
 ```bash
-# the tarball installs without Rust, into a scratch home
+podman run --rm -v "$PWD/dist:/d:Z" debian:trixie bash -c \
+  "apt-get update && apt-get install -y /d/vimvibe_*_amd64.deb && vimvibe version"
+podman run --rm -v "$PWD/dist:/d:Z" fedora:latest bash -c "dnf -y install /d/vimvibe-*.fc*.rpm && vimvibe version"
+```
+
+The tarball must still install without Rust, into a scratch home:
+
+```bash
 mkdir -p /tmp/t && tar xzf dist/vimvibe-*.tar.gz -C /tmp/t && cd /tmp/t/vimvibe-*/ && \
   HOME=/tmp/t/home PATH=/usr/bin:/bin ./install.sh && /tmp/t/home/.local/bin/vimvibe version
-
-# the RPM installs with its dependencies in a clean Fedora
-podman run --rm -v "$PWD/dist:/d:Z" fedora:latest bash -c \
-  "dnf -y install /d/vimvibe-*.rpm && vimvibe version && rpm -qpL /d/vimvibe-*.rpm"
 ```
+
+Publishing to the AUR is described in docs/packaging.md.
 
 ### 7. Merge to `main`, docs site
 
@@ -285,8 +295,9 @@ palette/
   test_settings.py     settings export/import and the Settings window
   vimvibe_select.py    text mode: the screen's words as a Vim buffer (tests: test_select.py)
 packaging/       launcher script, systemd user unit, icons      install.sh   installer / upgrader / --uninstall
-packaging/make-tarball.sh, make-rpm.sh, rpm/vimvibe.spec         release tarball and RPM
-.github/workflows/release.yml    on a v* tag: build the tarball, publish the GitHub release
+packaging/stage.sh                the install layout shared by every package
+packaging/make-tarball.sh, make-rpm.sh, rpm/vimvibe.spec, deb/make-deb.sh, arch/   tarball, RPM (Fedora, openSUSE), .deb, Arch
+.github/workflows/release.yml    on a v* tag: build every package (static core), publish the GitHub release
 docs/            the user and developer documentation (also the website's pages)   index.html   the docs website
 tools/click-target.py            a throwaway window for testing clicks by hand
 research/        design notes, measurements and plans (12: copy text from the screen)

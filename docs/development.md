@@ -109,6 +109,7 @@ Any UI can drive the daemon (session bus, `org.vimvibe.Daemon`, path `/org/vimvi
 
 | Method / signal | |
 |---|---|
+| `TriggerKeepFocus() → json` | like `Trigger()`, but the overlay never takes the keyboard (popups stay open); keys are taken through KWin, the window's text is labelled with OCR |
 | `Trigger() → json` | snapshot the focused window (toggles); emits `Opened(json)` or `Refused(json)` |
 | `Search(q) → json` | ranked hits `[{id, hint, score, element, screen}]`; a query equal to a label puts that element first |
 | `Elements() → json` | every element with id, label, role, screen rectangle |

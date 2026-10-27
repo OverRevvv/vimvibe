@@ -55,6 +55,7 @@ double_esc_close = true    # Esc must be pressed twice to close vimvibe (one Esc
 double_tap_ms = 250        # Enter twice within this many ms double-clicks; 0 = off (Enter then clicks at once, with no wait)
 click_with = "pointer"     # Enter clicks with a real pointer click, like a mouse (popups open and stay open); "semantic" = the app's own action first
 insert_after_field = true  # after a text field is clicked/focused, typing goes to the app and Esc brings vimvibe back
+keep_focus = false         # the normal shortcut also opens without taking the keyboard (popups stay open; see Meta+Shift+Alt+Space)
 
 [keys]                     # only what you changed is written; see Using vimvibe → Customizing keys
 toggle_panel = ["Ctrl+Space"]

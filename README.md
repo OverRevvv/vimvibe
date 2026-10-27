@@ -39,19 +39,21 @@ inside each split terminal; the panel lists the matches with their labels and Ct
 
 ## Install
 
-Requirements: KDE Plasma 6 (Wayland), Rust (`cargo`), Python 3 with PySide6, `gdbus`.
+vimvibe needs **KDE Plasma 6 on Wayland**. Download the package for your distro from the
+[releases page](https://github.com/OverRevvv/vimvibe/releases); it pulls in everything else (PySide6, layer-shell-qt, …):
 
-```bash
-# Fedora
-sudo dnf install cargo python3-pyside6 glib2
-# Debian/Ubuntu: sudo apt install cargo python3-pyside6.qtwidgets libglib2.0-bin   (or: pip install --user PySide6)
-# Arch:          sudo pacman -S rust pyside6 glib2
+| Distro | Install |
+|---|---|
+| Fedora | `sudo dnf install ./vimvibe-*.fc*.rpm` |
+| openSUSE Tumbleweed | `sudo zypper install --allow-unsigned-rpm ./vimvibe-*.opensuse.*.rpm` |
+| Debian 13+, Ubuntu / Kubuntu 25.10+ | `sudo apt install ./vimvibe_*_amd64.deb` |
+| Arch, Manjaro, EndeavourOS | `yay -S vimvibe-bin` (AUR) or `sudo pacman -U ./vimvibe-bin-*.pkg.tar.zst` |
+| Anything else | unpack `vimvibe-<version>-linux-x86_64.tar.gz` and run `./install.sh` (for your user; it tells you what to install) |
 
-git clone <this repo> vimvibe && cd vimvibe
-./install.sh
-```
+Details, dependency names per distro and how the packages are built and checked: [docs/packaging.md](docs/packaging.md).
 
-`install.sh` builds the core and installs, for your user only (no root):
+**From source** (Rust needed): `git clone https://github.com/OverRevvv/vimvibe.git && cd vimvibe && ./install.sh`. It
+builds the core and installs for your user only (no root):
 
 | File | What |
 |---|---|
@@ -60,10 +62,6 @@ git clone <this repo> vimvibe && cd vimvibe
 | `~/.local/share/vimvibe/` | the overlay and the Settings window |
 | `~/.local/share/icons/hicolor/…/vimvibe.*` | the icon (SVG + 16–512 px PNGs) |
 | `~/.local/share/applications/vimvibe.desktop` | the "vimvibe Settings" entry in your app menu |
-
-**No Rust?** Download `vimvibe-<version>-linux-x86_64.tar.gz` from the releases page, unpack it and run its `./install.sh`:
-it ships the compiled core, so only Python 3, PySide6 and `layer-shell-qt` (from your distro) are needed. Maintainers
-build it with `packaging/make-tarball.sh`; pushing a `v*` tag builds and publishes it through GitHub Actions.
 
 Make sure `~/.local/bin` is on your `PATH` (Fedora has it by default). Uninstall with `./install.sh --uninstall`
 (your settings in `~/.config/vimvibe/` are kept).
@@ -94,6 +92,7 @@ you want Space + H/J/K/L arrow keys).
 | Do | Keys |
 |---|---|
 | Open / close | **Meta+Shift+Space** (**Esc Esc** also closes) |
+| Open over a popup without closing it (Chrome extensions, dropdowns) | **Meta+Shift+Alt+Space** |
 | Pick an element | type its **label** (`pr`) or part of its **name** (`pull`), then **Enter** |
 | Right / double / middle click | **Ctrl+Enter** / **Enter twice** / **Shift+Enter** |
 | Scroll | hold **Space** + **J K H L** (or **D** / **U**) |
@@ -114,6 +113,7 @@ The full list of keys, modes and settings is in the [documentation](docs/using.m
 | [Configuration](docs/configuration.md) | the Settings window, every `config.toml` option, export / import as JSON |
 | [How it works](docs/architecture.md) | the logic behind every feature: opening, labels, clicking, keys, scrolling, mouse, OCR |
 | [Development](docs/development.md) | build, dev profile, code layout, D-Bus API |
+| [Packaging](docs/packaging.md) | install per distro, dependency names, how the packages are built and checked |
 | [Shortcat parity](docs/shortcat-parity.md) · [Limitations](docs/limitations.md) | what matches Shortcat, what does not yet |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | conventions and checks |
 
